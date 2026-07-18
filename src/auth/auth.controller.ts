@@ -1,6 +1,7 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { IsOptional, IsString } from 'class-validator';
 import type { Request } from 'express';
+import { assertRateLimit } from '../common/rate-limit';
 import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { AuthService } from './auth.service';
 import {
@@ -14,6 +15,9 @@ import {
   SendSmsDto,
   WebHandoffExchangeDto,
 } from './auth.dto';
+
+const clientKey = (req: Request, extra = '') =>
+  `${req.ip || 'unknown'}:${extra}`;
 
 class RefreshDto {
   @IsString()
@@ -32,6 +36,7 @@ export class AuthController {
 
   @Post('register')
   register(@Body() dto: RegisterDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, 'register'), 10, 60_000);
     return this.auth.register(dto, {
       ip: req.ip,
       ua: req.headers['user-agent'],
@@ -40,6 +45,7 @@ export class AuthController {
 
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, `login:${dto.email}`), 20, 60_000);
     return this.auth.login(dto, {
       ip: req.ip,
       ua: req.headers['user-agent'],
@@ -47,12 +53,15 @@ export class AuthController {
   }
 
   @Post('sms/send')
-  sendSms(@Body() dto: SendSmsDto) {
+  sendSms(@Body() dto: SendSmsDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, `sms:${dto.phone}`), 5, 60_000, '短信发送过于频繁');
+    assertRateLimit(clientKey(req, 'sms-ip'), 20, 60_000, '短信发送过于频繁');
     return this.auth.sendSms(dto);
   }
 
   @Post('register/phone')
   registerPhone(@Body() dto: RegisterPhoneDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, 'register-phone'), 10, 60_000);
     return this.auth.registerPhone(dto, {
       ip: req.ip,
       ua: req.headers['user-agent'],
@@ -61,6 +70,7 @@ export class AuthController {
 
   @Post('login/phone')
   loginPhone(@Body() dto: LoginPhoneDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, `login-phone:${dto.phone}`), 20, 60_000);
     return this.auth.loginPhone(dto, {
       ip: req.ip,
       ua: req.headers['user-agent'],
@@ -69,6 +79,7 @@ export class AuthController {
 
   @Post('login/sms')
   loginSms(@Body() dto: LoginSmsDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, `login-sms:${dto.phone}`), 20, 60_000);
     return this.auth.loginSms(dto, {
       ip: req.ip,
       ua: req.headers['user-agent'],

@@ -85,7 +85,17 @@ export class ReportsService {
     };
 
     let report;
+    let isNew = true;
     if (body.clientReportId) {
+      const existing = await this.prisma.reviewReport.findUnique({
+        where: {
+          orgId_clientReportId: {
+            orgId,
+            clientReportId: body.clientReportId,
+          },
+        },
+      });
+      isNew = !existing;
       report = await this.prisma.reviewReport.upsert({
         where: {
           orgId_clientReportId: {
@@ -103,23 +113,30 @@ export class ReportsService {
       report = await this.prisma.reviewReport.create({ data });
     }
 
-    await this.prisma.usageRecord.create({
-      data: {
-        orgId,
-        metric: 'reviews',
-        amount: 1,
-        period: this.periodKey(),
-        meta: { reportId: report.id },
-      },
-    });
+    // 仅首次创建计费，重复同步同一 clientReportId 不计用量
+    if (isNew) {
+      await this.prisma.usageRecord.create({
+        data: {
+          orgId,
+          metric: 'reviews',
+          amount: 1,
+          period: this.periodKey(),
+          meta: { reportId: report.id },
+        },
+      });
+    }
 
     await this.audit.log({
       orgId,
       actorId: userId,
-      action: 'report.upload',
+      action: isNew ? 'report.upload' : 'report.resync',
       resourceType: 'review_report',
       resourceId: report.id,
-      detail: { repoUrl: body.repoUrl, issueCount: report.issueCount },
+      detail: {
+        repoUrl: body.repoUrl,
+        issueCount: report.issueCount,
+        billed: isNew,
+      },
     });
 
     return report;

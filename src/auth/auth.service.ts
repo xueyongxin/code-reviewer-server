@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
@@ -21,12 +22,10 @@ import {
 import { normalizePhone } from './phone.util';
 
 export const SMS_TTL_MS = 5 * 60 * 1000;
+const CODE_TTL_MS = 2 * 60 * 1000;
 
-type SmsEntry = { code: string; expiresAt: number };
-
-type DesktopAuthEntry = {
+type DesktopAuthPayload = {
   state: string;
-  expiresAt: number;
   accessToken: string;
   refreshToken: string;
   expiresIn: string;
@@ -41,13 +40,6 @@ type DesktopAuthEntry = {
 
 @Injectable()
 export class AuthService {
-  /** 内存验证码：手机号 → 码 + 过期时间（开发态假短信） */
-  private readonly smsCodes = new Map<string, SmsEntry>();
-  /** 桌面端一次性授权码 */
-  private readonly desktopAuthCodes = new Map<string, DesktopAuthEntry>();
-  /** 桌面端跳转网页控制台的一次性交接码 */
-  private readonly webHandoffCodes = new Map<string, DesktopAuthEntry>();
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -55,6 +47,10 @@ export class AuthService {
     private readonly audit: AuditService,
     private readonly orgs: OrgsService,
   ) {}
+
+  private hashCode(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex');
+  }
 
   /** 登录/注册后消费手机号邀请，返回当前应落地的组织 */
   private async resolveOrgAfterAuth(userId: string) {
@@ -109,16 +105,70 @@ export class AuthService {
     throw new UnauthorizedException('账号不可用');
   }
 
-  private assertSmsCode(phone: string, input: string) {
-    const entry = this.smsCodes.get(phone);
-    if (!entry || entry.expiresAt < Date.now()) {
-      this.smsCodes.delete(phone);
+  private async assertSmsCode(phone: string, input: string) {
+    const row = await this.prisma.authChallenge.findFirst({
+      where: {
+        kind: 'sms',
+        subject: phone,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!row) {
       throw new BadRequestException('验证码已过期，请重新获取');
     }
-    if (input.trim() !== entry.code) {
+    if (row.codeHash !== this.hashCode(input.trim())) {
       throw new BadRequestException('验证码错误');
     }
-    this.smsCodes.delete(phone);
+    await this.prisma.authChallenge.update({
+      where: { id: row.id },
+      data: { consumedAt: new Date() },
+    });
+  }
+
+  private async saveChallenge(
+    kind: string,
+    subject: string,
+    rawCode: string,
+    ttlMs: number,
+    payload?: DesktopAuthPayload,
+  ) {
+    const expiresAt = new Date(Date.now() + ttlMs);
+    await this.prisma.authChallenge.deleteMany({
+      where: { kind, subject, consumedAt: null },
+    });
+    await this.prisma.authChallenge.create({
+      data: {
+        kind,
+        subject,
+        codeHash: this.hashCode(rawCode),
+        payload: payload
+          ? (JSON.parse(JSON.stringify(payload)) as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        expiresAt,
+      },
+    });
+  }
+
+  private async consumeChallenge(
+    kind: string,
+    rawCode: string,
+  ): Promise<DesktopAuthPayload | null> {
+    const row = await this.prisma.authChallenge.findFirst({
+      where: {
+        kind,
+        codeHash: this.hashCode(rawCode),
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!row) return null;
+    await this.prisma.authChallenge.update({
+      where: { id: row.id },
+      data: { consumedAt: new Date() },
+    });
+    return (row.payload as DesktopAuthPayload | null) ?? null;
   }
 
   private async issueTokens(user: {
@@ -203,8 +253,7 @@ export class AuthService {
   async sendSms(dto: SendSmsDto) {
     const phone = normalizePhone(dto.phone);
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = Date.now() + SMS_TTL_MS;
-    this.smsCodes.set(phone, { code, expiresAt });
+    await this.saveChallenge('sms', phone, code, SMS_TTL_MS);
 
     await this.audit.log({
       action: 'auth.sms_send',
@@ -227,7 +276,7 @@ export class AuthService {
     meta?: { ip?: string; ua?: string },
   ) {
     const phone = normalizePhone(dto.phone);
-    this.assertSmsCode(phone, dto.code);
+    await this.assertSmsCode(phone, dto.code);
 
     const exists = await this.prisma.user.findUnique({ where: { phone } });
     if (exists) throw new BadRequestException('手机号已注册');
@@ -329,7 +378,7 @@ export class AuthService {
 
   async loginSms(dto: LoginSmsDto, meta?: { ip?: string; ua?: string }) {
     const phone = normalizePhone(dto.phone);
-    this.assertSmsCode(phone, dto.code);
+    await this.assertSmsCode(phone, dto.code);
 
     let user = await this.prisma.user.findUnique({ where: { phone } });
     let isNew = false;
@@ -408,10 +457,8 @@ export class AuthService {
     this.assertAccountUsable(user);
     const tokens = await this.issueTokens(user);
     const code = randomUUID().replace(/-/g, '');
-    const expiresAt = Date.now() + 2 * 60 * 1000;
-    this.desktopAuthCodes.set(code, {
+    await this.saveChallenge('desktop', state, code, CODE_TTL_MS, {
       state,
-      expiresAt,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresIn: tokens.expiresIn,
@@ -427,15 +474,13 @@ export class AuthService {
   }
 
   async exchangeDesktopCode(code: string, state: string) {
-    const entry = this.desktopAuthCodes.get(code);
-    if (!entry || entry.expiresAt < Date.now()) {
-      this.desktopAuthCodes.delete(code);
+    const entry = await this.consumeChallenge('desktop', code);
+    if (!entry) {
       throw new UnauthorizedException('授权码无效或已过期，请重新登录');
     }
     if (entry.state !== state) {
       throw new UnauthorizedException('授权状态不匹配，请从桌面端重新发起登录');
     }
-    this.desktopAuthCodes.delete(code);
     return {
       accessToken: entry.accessToken,
       refreshToken: entry.refreshToken,
@@ -455,10 +500,8 @@ export class AuthService {
     this.assertAccountUsable(user);
     const tokens = await this.issueTokens(user);
     const code = randomUUID().replace(/-/g, '');
-    const expiresAt = Date.now() + 2 * 60 * 1000;
-    this.webHandoffCodes.set(code, {
+    await this.saveChallenge('web_handoff', 'web', code, CODE_TTL_MS, {
       state: 'web',
-      expiresAt,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresIn: tokens.expiresIn,
@@ -468,12 +511,10 @@ export class AuthService {
   }
 
   async exchangeWebHandoff(code: string) {
-    const entry = this.webHandoffCodes.get(code);
-    if (!entry || entry.expiresAt < Date.now()) {
-      this.webHandoffCodes.delete(code);
+    const entry = await this.consumeChallenge('web_handoff', code);
+    if (!entry) {
       throw new UnauthorizedException('交接码无效或已过期，请重新从桌面端打开');
     }
-    this.webHandoffCodes.delete(code);
     return {
       accessToken: entry.accessToken,
       refreshToken: entry.refreshToken,

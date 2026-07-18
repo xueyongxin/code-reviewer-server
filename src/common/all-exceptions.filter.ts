@@ -31,7 +31,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
           : obj.message || obj.error || message;
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // 未知错误：生产不回传内部细节，仅打日志
+      console.error('[unhandled]', exception);
+      message =
+        process.env.NODE_ENV === 'production'
+          ? '服务器内部错误'
+          : exception.message || message;
     }
 
     res.status(status).json({

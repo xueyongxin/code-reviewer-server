@@ -4,6 +4,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -97,10 +98,13 @@ export class ApiKeysController {
     @Query('orgId') orgId: string,
   ) {
     await this.assertAdmin(orgId, req.user.userId, req.user.isPlatformAdmin);
-    await this.prisma.apiKey.update({
-      where: { id },
+    const updated = await this.prisma.apiKey.updateMany({
+      where: { id, orgId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (updated.count === 0) {
+      throw new NotFoundException('API Key 不存在或不属于该组织');
+    }
     await this.audit.log({
       orgId,
       actorId: req.user.userId,

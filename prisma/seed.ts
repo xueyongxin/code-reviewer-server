@@ -320,10 +320,93 @@ async function main() {
     console.warn('MCP catalog seed skipped:', e)
   }
 
-  // —— 清理旧账号（保留超管）再写入三国演示数据 ——
-  await purgeNonAdminAccounts()
+  // —— Chat 命令目录 ——
+  const chatCommands = [
+    {
+      key: 'review',
+      slash: '/review',
+      name: '代码审查',
+      description: '针对当前报告做审查建议',
+      promptTemplate:
+        '请基于报告 {{reportId}} 给出审查建议。用户补充：{{args}}',
+      sortOrder: 10,
+    },
+    {
+      key: 'explain',
+      slash: '/explain',
+      name: '解释问题',
+      description: '解释选中问题的原因与修复',
+      promptTemplate: '请解释以下问题并给出修复建议：{{args}}',
+      sortOrder: 20,
+    },
+    {
+      key: 'help',
+      slash: '/help',
+      name: '帮助',
+      description: '列出可用命令',
+      promptTemplate: '',
+      sortOrder: 100,
+    },
+  ]
+  for (const c of chatCommands) {
+    await prisma.chatCommand.upsert({
+      where: { key: c.key },
+      create: { ...c, published: true },
+      update: { ...c, published: true },
+    })
+  }
+  console.log(`Chat commands seeded: ${chatCommands.length}`)
 
-  const passwordHash = await bcrypt.hash('admin123', 10)
+  // —— LLM 目录 ——
+  const llmItems = [
+    {
+      key: 'openai-compatible',
+      name: 'OpenAI 兼容',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      models: ['gpt-4o-mini', 'gpt-4o'],
+      fallbackModels: [],
+      apiKeyUrl: 'https://platform.openai.com/api-keys',
+      description: '标准 OpenAI Compatible API',
+      sortOrder: 10,
+    },
+    {
+      key: 'ollama',
+      name: 'Ollama 本地',
+      protocol: 'ollama',
+      baseUrl: 'http://127.0.0.1:11434',
+      model: 'llama3.2',
+      models: ['llama3.2', 'qwen2.5'],
+      fallbackModels: [],
+      apiKeyUrl: null as string | null,
+      description: '本机 Ollama',
+      sortOrder: 20,
+    },
+  ]
+  for (const item of llmItems) {
+    await prisma.llmCatalogItem.upsert({
+      where: { key: item.key },
+      create: { ...item, published: true },
+      update: { ...item, published: true },
+    })
+  }
+  console.log(`LLM catalog seeded: ${llmItems.length}`)
+
+  // —— 清理旧账号：仅显式 SEED_PURGE=1 时执行（避免误删生产数据）——
+  if (process.env.SEED_PURGE === '1') {
+    await purgeNonAdminAccounts()
+  } else {
+    console.log('Skip purge (set SEED_PURGE=1 to wipe non-admin users/orgs)')
+  }
+
+  const seedPassword = process.env.SEED_ADMIN_PASSWORD || 'admin123'
+  if (seedPassword === 'admin123') {
+    console.warn(
+      '[seed] Using default password admin123 — set SEED_ADMIN_PASSWORD in production',
+    )
+  }
+  const passwordHash = await bcrypt.hash(seedPassword, 10)
   const users: Record<string, Awaited<ReturnType<typeof upsertUser>>> = {}
   for (const u of SEED_USERS) {
     users[u.phone] = await upsertUser(u, passwordHash)
@@ -340,10 +423,16 @@ async function main() {
   await prisma.orgMember.deleteMany({ where: { userId: platformAdmin.id } })
 
   // —— 企业组织「蜀汉」（仅企业套餐；一人一组织）——
-  const shuOrg = await prisma.organization.create({
-    data: {
+  const shuOrg = await prisma.organization.upsert({
+    where: { slug: ENTERPRISE_ORG_SLUG },
+    create: {
       name: ENTERPRISE_ORG_NAME,
       slug: ENTERPRISE_ORG_SLUG,
+      ownerId: liubei.id,
+      status: 'active',
+    },
+    update: {
+      name: ENTERPRISE_ORG_NAME,
       ownerId: liubei.id,
       status: 'active',
     },
@@ -354,39 +443,52 @@ async function main() {
     await ensureSoleOrgMember(shuOrg.id, users[u.phone].id, u.orgRole)
   }
 
-  await prisma.orgConfig.create({
-    data: {
+  await prisma.orgConfig.upsert({
+    where: { orgId: shuOrg.id },
+    create: {
       orgId: shuOrg.id,
+      version: 1,
+      payload: DEFAULT_ORG_CONFIG,
+    },
+    update: {
       version: 1,
       payload: DEFAULT_ORG_CONFIG,
     },
   })
 
-  await prisma.subscription.create({
-    data: {
+  await prisma.subscription.upsert({
+    where: { orgId: shuOrg.id },
+    create: {
       orgId: shuOrg.id,
+      planId: enterprise.id,
+      status: 'active',
+      note: 'seed · 蜀汉 · Enterprise ¥299/席/年',
+    },
+    update: {
       planId: enterprise.id,
       status: 'active',
       note: 'seed · 蜀汉 · Enterprise ¥299/席/年',
     },
   })
 
-  // 企业开通对应订单：刘备下单、已支付（20 席 × ¥299）
-  const seatCount = 20
-  const paidAt = new Date('2026-07-01T10:00:00+08:00')
-  await prisma.order.create({
-    data: {
-      orgId: shuOrg.id,
-      planId: enterprise.id,
-      amountCents: enterprise.priceCents * seatCount,
-      status: 'paid',
-      paymentMethod: 'manual',
-      note: `seed · 刘备为「蜀汉」开通企业套餐 ${seatCount} 席`,
-      createdBy: liubei.id,
-      paidAt,
-      createdAt: paidAt,
-    },
-  })
+  // 企业开通对应订单：仅 purge 后补一笔，避免重复刷单
+  if (process.env.SEED_PURGE === '1') {
+    const seatCount = 20
+    const paidAt = new Date('2026-07-01T10:00:00+08:00')
+    await prisma.order.create({
+      data: {
+        orgId: shuOrg.id,
+        planId: enterprise.id,
+        amountCents: enterprise.priceCents * seatCount,
+        status: 'paid',
+        paymentMethod: 'manual',
+        note: `seed · 刘备为「蜀汉」开通企业套餐 ${seatCount} 席`,
+        createdBy: liubei.id,
+        paidAt,
+        createdAt: paidAt,
+      },
+    })
+  }
 
   // 刘禅/姜维/黄月英：无任何组织（测邀请加入；不建免费「假组织」）
 
@@ -458,16 +560,16 @@ async function main() {
 
   console.log('Seed OK')
   console.log('─'.repeat(56))
-  console.log('登录：手机号 + 短信验证码（页面右上角模拟短信）')
-  console.log('备用密码：admin123')
+  console.log('登录：手机号 + 短信验证码（开发 SMS_DEBUG=1 时可复制）')
+  console.log(`演示密码：${seedPassword}`)
   console.log('')
   console.log(`企业组织：${ENTERPRISE_ORG_NAME}（${ENTERPRISE_ORG_SLUG}）`)
   console.log(
     `  创建者 ${roleCount('org_owner')} · 管理员 ${roleCount('org_admin')} · 成员 ${roleCount('member')} · 合计 ${memberCount}`,
   )
-  console.log(
-    `  订单：刘备已支付企业套餐 ${seatCount} 席 · ¥${((enterprise.priceCents * seatCount) / 100).toFixed(0)}`,
-  )
+  if (process.env.SEED_PURGE === '1') {
+    console.log('  订单：已在 purge 模式下重建演示支付单')
+  }
   console.log('')
   console.log('手机号 / 姓名 / 身份：')
   for (const u of SEED_USERS) {
