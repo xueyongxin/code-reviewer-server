@@ -105,6 +105,11 @@ export class AuthService {
     throw new UnauthorizedException('账号不可用');
   }
 
+  /** 供换绑手机等场景复用 */
+  async verifySmsCode(phone: string, input: string) {
+    return this.assertSmsCode(phone, input);
+  }
+
   private async assertSmsCode(phone: string, input: string) {
     const row = await this.prisma.authChallenge.findFirst({
       where: {

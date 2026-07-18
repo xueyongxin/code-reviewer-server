@@ -10,3 +10,5 @@ generated/
 *.tsbuildinfo
 .DS_Store
 *.log
+
+/uploads

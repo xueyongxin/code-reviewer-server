@@ -113,11 +113,37 @@ model User {
   refreshTokens   RefreshToken[]
   notifications   Notification[]
   customRules     UserCustomRule[]
+  mcpServers      UserMcpServer[]
   orgInvitesCreated OrgInvite[]  @relation("OrgInviteCreator")
   orgInvitesAccepted OrgInvite[] @relation("OrgInviteAcceptor")
 
   @@index([status])
   @@map("users")
+}
+
+/// 用户个人 MCP 配置（管理端「我的 MCP」，跨设备同步）
+model UserMcpServer {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  key         String
+  name        String
+  description String?
+  command     String?
+  args        Json     @default("[]")
+  tags        Json     @default("[]")
+  verified    Boolean  @default(false)
+  enabled     Boolean  @default(true)
+  /// market | manual
+  source      String   @default("manual")
+  catalogId   String?  @map("catalog_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@map("user_mcp_servers")
 }
 
 /// 系统级键值配置（RBAC 说明、桌面端入口等）
