@@ -6,6 +6,7 @@ import { AuditModule } from '../audit/audit.module';
 import { OrgsModule } from '../orgs/orgs.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { resolveJwtSecret } from './jwt-secret';
 import { JwtStrategy } from './jwt.strategy';
 
 @Module({
@@ -17,7 +18,7 @@ import { JwtStrategy } from './jwt.strategy';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('JWT_SECRET') || 'dev-secret',
+        secret: resolveJwtSecret(config),
         signOptions: {
           expiresIn: (config.get<string>('JWT_EXPIRES_IN') || '7d') as `${number}d`,
         },

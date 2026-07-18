@@ -211,13 +211,14 @@ export class AuthService {
       detail: { phone, expiresIn: SMS_TTL_MS / 1000 },
     });
 
-    // 开发态：把验证码返回给客户端，由右上角假短信弹窗展示
+    // 仅显式开启 SMS_DEBUG=1 时回传验证码（本地联调）；生产禁止回传
+    const debugSms = process.env.SMS_DEBUG === '1';
     return {
       ok: true,
       message: '验证码已发送',
       phone,
-      code,
       expiresIn: SMS_TTL_MS / 1000,
+      ...(debugSms ? { code } : {}),
     };
   }
 

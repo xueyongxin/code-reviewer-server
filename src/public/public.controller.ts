@@ -4,13 +4,27 @@ import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { OrgRolesGuard, PlatformAdmin } from '../common/org-roles.guard';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  CLIENT_API_BASE_KEY,
+  CLIENT_AUTH_WEB_BASE_KEY,
+  CLIENT_CORS_ORIGINS_KEY,
+  CLIENT_DOWNLOAD_KEY,
+  CLIENT_UPDATE_FEED_KEY,
+  DEFAULT_CLIENT_API_BASE,
+  DEFAULT_CLIENT_AUTH_WEB_BASE,
+  LEGAL_TERMS_KEY,
+} from './client-config.keys';
 
-export const CLIENT_API_BASE_KEY = 'client.api_base';
-export const CLIENT_AUTH_WEB_BASE_KEY = 'client.auth_web_base';
-export const CLIENT_DOWNLOAD_KEY = 'client.download';
-export const LEGAL_TERMS_KEY = 'legal.terms';
-export const DEFAULT_CLIENT_API_BASE = 'http://localhost:3100';
-export const DEFAULT_CLIENT_AUTH_WEB_BASE = 'http://localhost:3000';
+export {
+  CLIENT_API_BASE_KEY,
+  CLIENT_AUTH_WEB_BASE_KEY,
+  CLIENT_CORS_ORIGINS_KEY,
+  CLIENT_DOWNLOAD_KEY,
+  CLIENT_UPDATE_FEED_KEY,
+  DEFAULT_CLIENT_API_BASE,
+  DEFAULT_CLIENT_AUTH_WEB_BASE,
+  LEGAL_TERMS_KEY,
+} from './client-config.keys';
 
 const DEFAULT_USER_AGREEMENT = `使用 Code Reviewer 桌面端与 Web 控制台，即表示你同意合理使用服务、不得滥用接口与审查额度，并遵守适用的法律法规。
 
@@ -62,6 +76,18 @@ class PatchClientConfigDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  /** 桌面端自动更新 feed（electron-updater） */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== '' && v != null)
+  @IsString()
+  @MinLength(8)
+  updateFeedUrl?: string;
+
+  /** CORS 允许来源，逗号分隔；空则仅允许登录网页地址 */
+  @IsOptional()
+  @IsString()
+  corsOrigins?: string;
 }
 
 class PatchLegalTermsDto {
@@ -119,17 +145,25 @@ export class PublicController {
   }
 
   private async readClientConfig() {
-    const [apiRow, authRow, dlRow] = await Promise.all([
+    const [apiRow, authRow, dlRow, feedRow, corsRow] = await Promise.all([
       this.prisma.systemSetting.findUnique({ where: { key: CLIENT_API_BASE_KEY } }),
       this.prisma.systemSetting.findUnique({
         where: { key: CLIENT_AUTH_WEB_BASE_KEY },
       }),
       this.prisma.systemSetting.findUnique({ where: { key: CLIENT_DOWNLOAD_KEY } }),
+      this.prisma.systemSetting.findUnique({ where: { key: CLIENT_UPDATE_FEED_KEY } }),
+      this.prisma.systemSetting.findUnique({ where: { key: CLIENT_CORS_ORIGINS_KEY } }),
     ]);
     const download = this.parseDownload(dlRow?.value);
+    const updateFeedUrl =
+      typeof feedRow?.value === 'string' ? feedRow.value.trim() : '';
+    const corsOrigins =
+      typeof corsRow?.value === 'string' ? corsRow.value.trim() : '';
     return {
       apiBase: this.asString(apiRow?.value, DEFAULT_CLIENT_API_BASE),
       authWebBase: this.asString(authRow?.value, DEFAULT_CLIENT_AUTH_WEB_BASE),
+      updateFeedUrl,
+      corsOrigins,
       ...download,
     };
   }
@@ -268,6 +302,14 @@ export class PublicController {
       linux: dto.linux !== undefined ? dto.linux.trim() : current.linux,
       notes: dto.notes !== undefined ? dto.notes.trim() : current.notes,
     };
+    const updateFeedUrl =
+      dto.updateFeedUrl !== undefined
+        ? dto.updateFeedUrl.trim().replace(/\/$/, '')
+        : current.updateFeedUrl;
+    const corsOrigins =
+      dto.corsOrigins !== undefined
+        ? dto.corsOrigins.trim()
+        : current.corsOrigins;
 
     await Promise.all([
       this.prisma.systemSetting.upsert({
@@ -297,15 +339,33 @@ export class PublicController {
         },
         update: { value: download, updatedBy: req.user.userId },
       }),
+      this.prisma.systemSetting.upsert({
+        where: { key: CLIENT_UPDATE_FEED_KEY },
+        create: {
+          key: CLIENT_UPDATE_FEED_KEY,
+          value: updateFeedUrl,
+          updatedBy: req.user.userId,
+        },
+        update: { value: updateFeedUrl, updatedBy: req.user.userId },
+      }),
+      this.prisma.systemSetting.upsert({
+        where: { key: CLIENT_CORS_ORIGINS_KEY },
+        create: {
+          key: CLIENT_CORS_ORIGINS_KEY,
+          value: corsOrigins,
+          updatedBy: req.user.userId,
+        },
+        update: { value: corsOrigins, updatedBy: req.user.userId },
+      }),
     ]);
 
     await this.audit.log({
       actorId: req.user.userId,
       action: 'admin.client_config.update',
       resourceType: 'system_setting',
-      detail: { apiBase, authWebBase, download },
+      detail: { apiBase, authWebBase, updateFeedUrl, corsOrigins, download },
     });
 
-    return { apiBase, authWebBase, ...download };
+    return { apiBase, authWebBase, updateFeedUrl, corsOrigins, ...download };
   }
 }

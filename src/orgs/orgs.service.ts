@@ -9,6 +9,10 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { normalizePhone } from '../auth/phone.util';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  CLIENT_AUTH_WEB_BASE_KEY,
+  DEFAULT_CLIENT_AUTH_WEB_BASE,
+} from '../public/client-config.keys';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MANAGE_ROLES: OrgRole[] = ['org_owner', 'org_admin'];
@@ -38,11 +42,20 @@ export class OrgsService {
       .slice(0, 32);
   }
 
-  private webBase(): string {
+  /** 邀请链接域名：优先配置中心 client.auth_web_base */
+  private async webBase(): Promise<string> {
+    const row = await this.prisma.systemSetting.findUnique({
+      where: { key: CLIENT_AUTH_WEB_BASE_KEY },
+    });
+    const fromDb =
+      typeof row?.value === 'string' && row.value.trim()
+        ? row.value.trim()
+        : '';
     return (
+      fromDb ||
       process.env.ADMIN_WEB_BASE ||
       process.env.CLIENT_AUTH_WEB_BASE ||
-      'http://localhost:3000'
+      DEFAULT_CLIENT_AUTH_WEB_BASE
     ).replace(/\/$/, '');
   }
 
@@ -384,12 +397,13 @@ export class OrgsService {
           resourceType: 'org_member',
           detail: { phone, role, userId: user.id },
         });
+        const base = await this.webBase();
         return {
           mode: 'joined' as const,
           phone,
           role,
           inviteId: invite.id,
-          inviteUrl: `${this.webBase()}/invite/${token}`,
+          inviteUrl: `${base}/invite/${token}`,
         };
       }
     }
@@ -403,6 +417,7 @@ export class OrgsService {
       detail: { phone: phone || null, role },
     });
 
+    const base = await this.webBase();
     return {
       mode: 'link' as const,
       phone: phone || null,
@@ -410,7 +425,7 @@ export class OrgsService {
       inviteId: invite.id,
       token,
       expiresAt: invite.expiresAt,
-      inviteUrl: `${this.webBase()}/invite/${token}`,
+      inviteUrl: `${base}/invite/${token}`,
       message: phone
         ? '该手机号尚未注册，已生成邀请链接；对方注册登录后将自动加入'
         : '已生成邀请链接，分享给对方即可',

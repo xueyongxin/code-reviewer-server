@@ -2,12 +2,14 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
+import { resolveCorsOriginOption } from './common/cors-origins';
 import { ResponseInterceptor } from './common/response.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const corsOrigin = await resolveCorsOriginOption();
   app.enableCors({
-    origin: true,
+    origin: corsOrigin,
     credentials: true,
   });
   app.useGlobalPipes(
