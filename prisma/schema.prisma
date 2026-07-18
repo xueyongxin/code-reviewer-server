@@ -1,0 +1,691 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 组织内角色：所有者 / 管理员 / 成员 / 账单只读 / 审计员
+enum OrgRole {
+  org_owner
+  org_admin
+  member
+  billing_viewer
+  auditor
+}
+
+/// 审查报告可见性：仅自己 / 组织内
+enum ReportVisibility {
+  private
+  org
+}
+
+/// 审查报告状态
+enum ReportStatus {
+  pending
+  running
+  success
+  failed
+  cancelled
+}
+
+/// 订阅状态
+enum SubscriptionStatus {
+  active
+  past_due
+  cancelled
+  trial
+}
+
+/// 用户账号状态：异常/封禁仅平台超管可改，且必须备注原因
+enum UserStatus {
+  normal
+  abnormal
+  banned
+}
+
+/// 订单状态
+enum OrderStatus {
+  pending
+  paid
+  cancelled
+}
+
+/// 订单支付方式
+enum PaymentMethod {
+  alipay
+  wechat
+  manual
+  other
+}
+
+/// 组织启用状态（超管可禁用，不可直接删成员）
+enum OrgStatus {
+  active
+  disabled
+}
+
+/// 组织邀请状态
+enum OrgInviteStatus {
+  pending
+  accepted
+  revoked
+  expired
+}
+
+/// 用户账号表（登录身份、资料、平台超管、账号状态）
+model User {
+  /// 用户主键 UUID
+  id              String     @id @default(uuid())
+  /// 邮箱（可选，唯一）
+  email           String?    @unique
+  /// 手机号（可选，唯一；短信登录主标识）
+  phone           String?    @unique
+  /// 密码哈希（bcrypt；可空表示仅验证码登录）
+  passwordHash    String?    @map("password_hash")
+  /// 显示昵称
+  displayName     String     @map("display_name")
+  /// 头像 URL
+  avatarUrl       String?    @map("avatar_url")
+  /// 是否平台超管（运营后台权限）
+  isPlatformAdmin Boolean    @default(false) @map("is_platform_admin")
+  /// 是否可用（与 status=normal 同步，兼容旧逻辑）
+  isActive        Boolean    @default(true) @map("is_active")
+  /// 账号状态：normal/abnormal/banned
+  status          UserStatus @default(normal)
+  /// 状态变更原因（异常/封禁必填）
+  statusReason    String?    @map("status_reason")
+  /// 状态最近变更时间
+  statusChangedAt DateTime?  @map("status_changed_at")
+  /// 状态变更操作人用户ID
+  statusChangedBy String?    @map("status_changed_by")
+  /// 创建时间
+  createdAt       DateTime   @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  memberships     OrgMember[]
+  ownedOrgs       Organization[] @relation("OrgOwner")
+  uploadedReports ReviewReport[]
+  auditLogs       AuditLog[]     @relation("AuditActor")
+  refreshTokens   RefreshToken[]
+  notifications   Notification[]
+  customRules     UserCustomRule[]
+  orgInvitesCreated OrgInvite[]  @relation("OrgInviteCreator")
+  orgInvitesAccepted OrgInvite[] @relation("OrgInviteAcceptor")
+
+  @@index([status])
+  @@map("users")
+}
+
+/// 系统级键值配置（RBAC 说明、桌面端入口等）
+model SystemSetting {
+  /// 配置键（主键）
+  key       String   @id
+  /// 配置值 JSON
+  value     Json
+  /// 更新时间
+  updatedAt DateTime @updatedAt @map("updated_at")
+  /// 最近更新人用户ID
+  updatedBy String?  @map("updated_by")
+
+  @@map("system_settings")
+}
+
+/// 刷新令牌（登录会话续期）
+model RefreshToken {
+  /// 主键 UUID
+  id        String    @id @default(uuid())
+  /// 所属用户ID
+  userId    String    @map("user_id")
+  /// Refresh Token 的 SHA256 哈希（不存明文）
+  tokenHash String    @map("token_hash")
+  /// 过期时间
+  expiresAt DateTime  @map("expires_at")
+  /// 吊销时间（登出或轮转时写入）
+  revokedAt DateTime? @map("revoked_at")
+  /// 创建时间
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// 组织/团队（工作区）
+model Organization {
+  /// 组织主键 UUID
+  id         String    @id @default(uuid())
+  /// 组织名称
+  name       String
+  /// 组织唯一短标识
+  slug       String    @unique
+  /// 组织所有者用户ID（创建者）
+  ownerId    String    @map("owner_id")
+  /// 启用 / 禁用
+  status     OrgStatus @default(active)
+  /// 禁用时间
+  disabledAt DateTime? @map("disabled_at")
+  /// 禁用操作人（超管）
+  disabledBy String?   @map("disabled_by")
+  /// 创建时间
+  createdAt  DateTime  @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  owner          User               @relation("OrgOwner", fields: [ownerId], references: [id])
+  members        OrgMember[]
+  invites        OrgInvite[]
+  config         OrgConfig?
+  configVersions OrgConfigVersion[]
+  reports        ReviewReport[]
+  subscription   Subscription?
+  usageRecords   UsageRecord[]
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  orders         Order[]
+  apiKeys        ApiKey[]
+
+  @@index([status])
+  @@map("organizations")
+}
+
+/// 组织成员关系（一人仅可属于一个组织）
+model OrgMember {
+  /// 主键 UUID
+  id        String   @id @default(uuid())
+  /// 组织ID
+  orgId     String   @map("org_id")
+  /// 用户ID（全局唯一：一人一组织）
+  userId    String   @unique @map("user_id")
+  /// 组织内角色
+  role      OrgRole  @default(member)
+  /// 加入时间
+  createdAt DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@map("org_members")
+}
+
+/// 组织邀请（链接 / 手机号；未注册也可发邀请）
+model OrgInvite {
+  /// 主键 UUID
+  id          String          @id @default(uuid())
+  /// 目标组织
+  orgId       String          @map("org_id")
+  /// 邀请 token（用于分享链接）
+  token       String          @unique
+  /// 被邀请手机号（可选；按号添加时必填）
+  phone       String?
+  /// 加入后角色（默认 member）
+  role        OrgRole         @default(member)
+  /// 状态
+  status      OrgInviteStatus @default(pending)
+  /// 过期时间
+  expiresAt   DateTime        @map("expires_at")
+  /// 邀请人
+  createdBy   String          @map("created_by")
+  /// 接受人（注册/登录后）
+  acceptedBy  String?         @map("accepted_by")
+  /// 接受时间
+  acceptedAt  DateTime?       @map("accepted_at")
+  /// 创建时间
+  createdAt   DateTime        @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  creator  User         @relation("OrgInviteCreator", fields: [createdBy], references: [id])
+  acceptor User?        @relation("OrgInviteAcceptor", fields: [acceptedBy], references: [id])
+
+  @@index([orgId, status])
+  @@index([phone, status])
+  @@map("org_invites")
+}
+
+/// 组织当前配置（团队级审查模板；不含明文密钥）
+model OrgConfig {
+  /// 主键 UUID
+  id        String   @id @default(uuid())
+  /// 组织ID（一对一）
+  orgId     String   @unique @map("org_id")
+  /// 配置版本号（每次保存递增）
+  version   Int      @default(1)
+  /// 配置 JSON：LLM/MCP/规则包/流水线/通知等（无明文 Token）
+  payload   Json
+  /// 最近更新人用户ID
+  updatedBy String?  @map("updated_by")
+  /// 更新时间
+  updatedAt DateTime @updatedAt @map("updated_at")
+  /// 创建时间
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("org_config")
+}
+
+/// 组织配置历史版本快照
+model OrgConfigVersion {
+  /// 主键 UUID
+  id        String   @id @default(uuid())
+  /// 组织ID
+  orgId     String   @map("org_id")
+  /// 历史版本号
+  version   Int
+  /// 该版本配置 JSON 快照
+  payload   Json
+  /// 保存该版本的用户ID
+  updatedBy String?  @map("updated_by")
+  /// 归档时间
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, version])
+  @@map("org_config_versions")
+}
+
+/// 云端审查报告（桌面端上传/同步）
+model ReviewReport {
+  /// 报告主键 UUID
+  id              String           @id @default(uuid())
+  /// 所属组织ID
+  orgId           String           @map("org_id")
+  /// 上传者用户ID
+  uploaderId      String           @map("uploader_id")
+  /// 桌面端本地报告ID（组织内幂等）
+  clientReportId  String?          @map("client_report_id")
+  /// 代码仓库地址
+  repoUrl         String           @map("repo_url")
+  /// 分支名
+  branch          String?
+  /// Pull Request 编号
+  prNumber        String?          @map("pr_number")
+  /// 提交 SHA
+  commitSha       String?          @map("commit_sha")
+  /// 报告状态
+  status          ReportStatus     @default(success)
+  /// 可见性
+  visibility      ReportVisibility @default(private)
+  /// 问题条数汇总
+  issueCount      Int              @default(0) @map("issue_count")
+  /// 审查总耗时（毫秒）
+  totalDurationMs Int?             @map("total_duration_ms")
+  /// 上传时桌面端版本
+  clientVersion   String?          @map("client_version")
+  /// 摘要文本
+  summary         String?
+  /// 完整报告 JSON
+  payload         Json
+  /// 创建时间
+  createdAt       DateTime         @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  uploader User         @relation(fields: [uploaderId], references: [id])
+
+  @@unique([orgId, clientReportId])
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([repoUrl])
+  @@map("review_reports")
+}
+
+/// 套餐定义（见仓库《权限与套餐.md》）
+model Plan {
+  /// 套餐主键 UUID
+  id              String   @id @default(uuid())
+  /// 套餐唯一键：free / personal_* / enterprise
+  key             String   @unique
+  /// 套餐展示名称
+  name            String
+  /// 成员/席位上限
+  maxMembers      Int      @default(3) @map("max_members")
+  /// 每月审查次数上限
+  maxReviewsMonth Int      @default(50) @map("max_reviews_month")
+  /// 报告保留天数
+  retentionDays   Int      @default(30) @map("retention_days")
+  /// 存储配额（MB）
+  storageMb       Int      @default(500) @map("storage_mb")
+  /// 标价（分）；企业为每席位每年价格
+  priceCents      Int      @default(0) @map("price_cents")
+  /// 是否对用户可见/可购
+  isActive        Boolean  @default(true) @map("is_active")
+  /// 创建时间
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  subscriptions Subscription[]
+  orders        Order[]
+
+  @@map("plans")
+}
+
+/// 组织当前订阅（一组织一条）
+model Subscription {
+  /// 主键 UUID
+  id        String             @id @default(uuid())
+  /// 组织ID（唯一）
+  orgId     String             @unique @map("org_id")
+  /// 当前套餐ID
+  planId    String             @map("plan_id")
+  /// 订阅状态
+  status    SubscriptionStatus @default(trial)
+  /// 订阅开始时间
+  startedAt DateTime           @default(now()) @map("started_at")
+  /// 订阅结束时间
+  endsAt    DateTime?          @map("ends_at")
+  /// 备注（开通说明等）
+  note      String?
+  /// 创建时间
+  createdAt DateTime           @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan Plan         @relation(fields: [planId], references: [id])
+
+  @@map("subscriptions")
+}
+
+/// 用量流水（按账期与指标）
+model UsageRecord {
+  /// 主键 UUID
+  id        String   @id @default(uuid())
+  /// 组织ID
+  orgId     String   @map("org_id")
+  /// 用量指标名，如 reviews
+  metric    String
+  /// 本次计入数量
+  amount    Int      @default(1)
+  /// 账期标识，如 2026-07
+  period    String
+  /// 扩展元数据 JSON
+  meta      Json?
+  /// 记录时间
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, period, metric])
+  @@map("usage_records")
+}
+
+/// 审计日志
+model AuditLog {
+  /// 主键 UUID
+  id           String   @id @default(uuid())
+  /// 关联组织ID（平台级操作可空）
+  orgId        String?  @map("org_id")
+  /// 操作人用户ID
+  actorId      String?  @map("actor_id")
+  /// 动作标识，如 user.ban
+  action       String
+  /// 资源类型
+  resourceType String?  @map("resource_type")
+  /// 资源ID
+  resourceId   String?  @map("resource_id")
+  /// 客户端 IP
+  ip           String?
+  /// User-Agent
+  userAgent    String?  @map("user_agent")
+  /// 请求追踪ID
+  requestId    String?  @map("request_id")
+  /// 详情 JSON
+  detail       Json?
+  /// 发生时间
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  actor User?         @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+/// 站内通知
+model Notification {
+  /// 主键 UUID
+  id        String    @id @default(uuid())
+  /// 接收用户ID
+  userId    String    @map("user_id")
+  /// 关联组织ID（可选）
+  orgId     String?   @map("org_id")
+  /// 标题
+  title     String
+  /// 正文
+  body      String
+  /// 已读时间（空=未读）
+  readAt    DateTime? @map("read_at")
+  /// 创建时间
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+/// 用户自定义审查规则（控制台「审查规则」；供对话/审查时遵循）
+model UserCustomRule {
+  /// 主键 UUID
+  id          String   @id @default(uuid())
+  /// 所属用户ID
+  userId      String   @map("user_id")
+  /// 规则名称
+  name        String
+  /// 规则正文（自然语言说明）
+  content     String   @default("")
+  /// 是否启用
+  enabled     Boolean  @default(true)
+  /// 来源：manual | platform
+  source      String   @default("manual")
+  /// 来自平台审查规则的 key（source=platform 时）
+  platformKey String?  @map("platform_key")
+  /// 创建时间
+  createdAt   DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("user_custom_rules")
+}
+
+/// 平台审查规则/审查方式目录（桌面端勾选后驱动 LLM 审查重点）
+model ReviewMethod {
+  /// 主键 UUID
+  id            String   @id @default(uuid())
+  /// 业务唯一键（客户端 methodIds 存此值，如 null-check）
+  key           String   @unique
+  /// 展示名称
+  name          String
+  /// 分组：功能逻辑 / 安全漏洞 / …
+  groupName     String   @map("group_name")
+  /// 说明文案
+  description   String   @default("")
+  /// 映射的静态规则 id 列表
+  staticRuleIds Json     @default("[]") @map("static_rule_ids")
+  /// 排序（越小越靠前）
+  sortOrder     Int      @default(0) @map("sort_order")
+  /// 是否对客户端可见
+  published     Boolean  @default(true)
+  /// 创建时间
+  createdAt     DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([published, sortOrder])
+  @@map("review_methods")
+}
+
+/// 对话 Slash 命令目录（超管配置；桌面端对话输入 / 唤起）
+model ChatCommand {
+  /// 主键 UUID
+  id             String   @id @default(uuid())
+  /// 业务唯一键（不含斜杠，如 review）
+  key            String   @unique
+  /// 斜杠命令（如 /review）
+  slash          String   @unique
+  /// 展示名称
+  name           String
+  /// 说明
+  description    String   @default("")
+  /// 触发后注入的提示词模板（可含 {{args}} {{reportId}}）
+  promptTemplate String   @default("") @map("prompt_template")
+  /// 排序（越小越靠前）
+  sortOrder      Int      @default(0) @map("sort_order")
+  /// 是否对客户端可见
+  published      Boolean  @default(true)
+  /// 创建时间
+  createdAt      DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([published, sortOrder])
+  @@map("chat_commands")
+}
+
+/// 平台内置 LLM 服务商/模型目录（超管配置；桌面端「内置模型」拉取）
+model LlmCatalogItem {
+  /// 主键 UUID
+  id             String   @id @default(uuid())
+  /// 业务唯一键（如 siliconflow）
+  key            String   @unique
+  /// 服务商展示名
+  name           String
+  /// 协议：openai-compatible / anthropic / ollama
+  protocol       String   @default("openai-compatible")
+  /// API Base URL
+  baseUrl        String   @map("base_url")
+  /// 默认模型 id
+  model          String
+  /// 可选模型列表 JSON 数组
+  models         Json     @default("[]")
+  /// 备用模型 JSON 数组
+  fallbackModels Json     @default("[]") @map("fallback_models")
+  /// 「获取 API 密钥」外链
+  apiKeyUrl      String?  @map("api_key_url")
+  /// 说明
+  description    String   @default("")
+  /// 排序（越小越靠前）
+  sortOrder      Int      @default(0) @map("sort_order")
+  /// 是否对客户端可见
+  published      Boolean  @default(true)
+  /// 创建时间
+  createdAt      DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([published, sortOrder])
+  @@map("llm_catalog_items")
+}
+
+/// MCP 目录项（平台发布的可安装模板）
+model McpCatalogItem {
+  /// 主键 UUID
+  id          String   @id @default(uuid())
+  /// 目录唯一键
+  key         String   @unique
+  /// 展示名称
+  name        String
+  /// 描述
+  description String?
+  /// 传输方式：stdio/sse/http 等
+  transport   String   @default("stdio")
+  /// stdio 启动命令
+  command     String?
+  /// 命令参数 JSON 数组
+  args        Json?
+  /// 远程 MCP URL
+  url         String?
+  /// 所需环境变量键名列表（不含密钥值）
+  envKeys     Json?    @map("env_keys")
+  /// 标签 JSON 数组
+  tags        Json?
+  /// 是否官方/已校验
+  verified    Boolean  @default(false)
+  /// 是否上架对用户可见
+  published   Boolean  @default(true)
+  /// 角标文案
+  badge       String?
+  /// 创建时间
+  createdAt   DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("mcp_catalog_items")
+}
+
+/// 套餐订单（人审开通；在线支付后置）
+model Order {
+  /// 订单主键 UUID
+  id            String         @id @default(uuid())
+  /// 购买组织ID（企业套餐可先下单后建组织，故可空）
+  orgId         String?        @map("org_id")
+  /// 目标套餐ID
+  planId        String         @map("plan_id")
+  /// 订单金额（分）
+  amountCents   Int            @map("amount_cents")
+  /// 订单状态
+  status        OrderStatus    @default(pending)
+  /// 支付方式（确认付款时写入）
+  paymentMethod PaymentMethod? @map("payment_method")
+  /// 备注
+  note          String?
+  /// 下单人用户ID
+  createdBy     String?        @map("created_by")
+  /// 支付确认时间
+  paidAt        DateTime?      @map("paid_at")
+  /// 创建时间
+  createdAt     DateTime       @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  // 解散组织时保留已付订单（orgId 置空），便于sole创建者重建；转让退出后订单仍挂原组织
+  org  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  plan Plan          @relation(fields: [planId], references: [id])
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([createdBy, status])
+  @@map("orders")
+}
+
+/// 组织 API Key（仅存前缀与哈希）
+model ApiKey {
+  /// 主键 UUID
+  id         String    @id @default(uuid())
+  /// 所属组织ID
+  orgId      String    @map("org_id")
+  /// 密钥备注名
+  name       String
+  /// 密钥前缀（展示用）
+  keyPrefix  String    @map("key_prefix")
+  /// 完整密钥哈希
+  keyHash    String    @map("key_hash")
+  /// 创建人用户ID
+  createdBy  String    @map("created_by")
+  /// 最近使用时间
+  lastUsedAt DateTime? @map("last_used_at")
+  /// 吊销时间（空=有效）
+  revokedAt  DateTime? @map("revoked_at")
+  /// 创建时间
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([keyHash])
+  @@map("api_keys")
+}

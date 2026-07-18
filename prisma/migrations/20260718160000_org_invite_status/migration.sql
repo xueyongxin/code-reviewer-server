@@ -1,0 +1,2 @@
+-- OrgStatus / OrgInviteStatus / organizations.status / org_members.user_id unique / org_invites
+-- Applied manually to local DB; kept for history.
