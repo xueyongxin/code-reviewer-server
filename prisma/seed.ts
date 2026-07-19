@@ -393,6 +393,117 @@ async function main() {
   }
   console.log(`LLM catalog seeded: ${llmItems.length}`)
 
+  // —— 代码仓库 / 代码托管平台目录 ——
+  const codeRepoItems = [
+    {
+      key: 'github',
+      name: 'GitHub',
+      description: '连接 GitHub，访问公开/私有仓库，支持读取代码与 PR。',
+      tokenUrl:
+        'https://github.com/settings/tokens/new?scopes=repo&description=Code%20Reviewer',
+      logoUrl: null as string | null,
+      needsBaseUrl: false,
+      baseUrlPlaceholder: null as string | null,
+      sortOrder: 10,
+    },
+    {
+      key: 'gitlab',
+      name: 'GitLab',
+      description: '连接 GitLab.com 或自建 GitLab，访问项目与合并请求。',
+      tokenUrl: 'https://gitlab.com/-/user_settings/personal_access_tokens',
+      logoUrl: null,
+      needsBaseUrl: true,
+      baseUrlPlaceholder: 'https://gitlab.com',
+      sortOrder: 20,
+    },
+    {
+      key: 'gitee',
+      name: 'Gitee',
+      description: '连接码云 Gitee，访问企业/个人仓库。',
+      tokenUrl: 'https://gitee.com/profile/personal_access_tokens',
+      logoUrl: null,
+      needsBaseUrl: false,
+      baseUrlPlaceholder: null,
+      sortOrder: 30,
+    },
+    {
+      key: 'bitbucket',
+      name: 'Bitbucket',
+      description: '连接 Atlassian Bitbucket Cloud，访问仓库与 Pull Request。',
+      tokenUrl: 'https://bitbucket.org/account/settings/app-passwords/',
+      logoUrl: null,
+      needsBaseUrl: false,
+      baseUrlPlaceholder: null,
+      sortOrder: 40,
+    },
+    {
+      key: 'coding',
+      name: 'CODING',
+      description: '连接腾讯云 CODING DevOps，访问团队代码仓库。',
+      tokenUrl: 'https://coding.net/user/account/setting/tokens',
+      logoUrl: null,
+      needsBaseUrl: false,
+      baseUrlPlaceholder: null,
+      sortOrder: 50,
+    },
+    {
+      key: 'gitcode',
+      name: 'GitCode',
+      description: '连接华为云 GitCode / 开源社区仓库。',
+      tokenUrl: 'https://gitcode.com/setting/token-classic',
+      logoUrl: null,
+      needsBaseUrl: false,
+      baseUrlPlaceholder: null,
+      sortOrder: 60,
+    },
+    {
+      key: 'azure',
+      name: 'Azure DevOps',
+      description: '连接 Azure Repos，访问 Azure DevOps 中的 Git 仓库。',
+      tokenUrl: 'https://dev.azure.com/',
+      logoUrl: null,
+      needsBaseUrl: true,
+      baseUrlPlaceholder: 'https://dev.azure.com/org',
+      sortOrder: 70,
+    },
+    {
+      key: 'gitea',
+      name: 'Gitea',
+      description: '连接自建或托管的 Gitea 实例。',
+      tokenUrl: null,
+      logoUrl: null,
+      needsBaseUrl: true,
+      baseUrlPlaceholder: 'https://gitea.example.com',
+      sortOrder: 80,
+    },
+    {
+      key: 'other',
+      name: '其他 Git 仓库',
+      description: '任意支持 HTTPS + Personal Access Token 的 Git 托管平台。',
+      tokenUrl: null,
+      logoUrl: null,
+      needsBaseUrl: true,
+      baseUrlPlaceholder: 'https://git.example.com',
+      sortOrder: 90,
+    },
+  ]
+  for (const item of codeRepoItems) {
+    await prisma.codeRepoCatalogItem.upsert({
+      where: { key: item.key },
+      create: { ...item, published: true },
+      update: {
+        name: item.name,
+        description: item.description,
+        tokenUrl: item.tokenUrl,
+        needsBaseUrl: item.needsBaseUrl,
+        baseUrlPlaceholder: item.baseUrlPlaceholder,
+        sortOrder: item.sortOrder,
+        // 不强制覆盖运营已改的 logoUrl / published
+      },
+    })
+  }
+  console.log(`Code repo catalog seeded: ${codeRepoItems.length}`)
+
   // —— 清理旧账号：仅显式 SEED_PURGE=1 时执行（避免误删生产数据）——
   if (process.env.SEED_PURGE === '1') {
     await purgeNonAdminAccounts()

@@ -638,6 +638,37 @@ model LlmCatalogItem {
   @@map("llm_catalog_items")
 }
 
+/// 代码托管平台目录（桌面端「设置 → 代码仓库」列表）
+model CodeRepoCatalogItem {
+  /// 主键 UUID
+  id                 String   @id @default(uuid())
+  /// 业务唯一键（如 github、gitlab）
+  key                String   @unique
+  /// 展示名称
+  name               String
+  /// 说明
+  description        String   @default("")
+  /// 创建 Token 的文档/控制台地址
+  tokenUrl           String?  @map("token_url")
+  /// Logo 图片 URL（可外链；空则客户端用本地兜底图标）
+  logoUrl            String?  @map("logo_url")
+  /// 是否需要填写实例地址
+  needsBaseUrl       Boolean  @default(false) @map("needs_base_url")
+  /// 实例地址占位示例
+  baseUrlPlaceholder String?  @map("base_url_placeholder")
+  /// 排序（越小越靠前）
+  sortOrder          Int      @default(0) @map("sort_order")
+  /// 是否对客户端可见（关闭后桌面端不展示）
+  published          Boolean  @default(true)
+  /// 创建时间
+  createdAt          DateTime @default(now()) @map("created_at")
+  /// 更新时间
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([published, sortOrder])
+  @@map("code_repo_catalog_items")
+}
+
 /// MCP 目录项（平台发布的可安装模板）
 model McpCatalogItem {
   /// 主键 UUID
