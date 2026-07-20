@@ -9,7 +9,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -49,6 +50,18 @@ class RebindPhoneDto {
   code!: string;
 }
 
+class RebindEmailDto {
+  @IsEmail({}, { message: '邮箱格式不正确' })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  email!: string;
+
+  @IsString()
+  @MinLength(4)
+  code!: string;
+}
+
 @Controller('api/v1/me')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
@@ -78,7 +91,16 @@ export class UsersController {
         createdAt: true,
         memberships: {
           include: {
-            org: { select: { id: true, name: true, slug: true } },
+            org: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                subscription: {
+                  select: { plan: { select: { key: true, name: true } } },
+                },
+              },
+            },
           },
         },
       },
@@ -183,6 +205,32 @@ export class UsersController {
     });
   }
 
+  /** 换绑/绑定邮箱：向新邮箱发验证码后提交 */
+  @Post('email/rebind')
+  async rebindEmail(
+    @Req() req: { user: { userId: string } },
+    @Body() dto: RebindEmailDto,
+  ) {
+    const email = dto.email.toLowerCase().trim();
+    await this.auth.verifyEmailCode(email, dto.code);
+    const taken = await this.prisma.user.findFirst({
+      where: { email, NOT: { id: req.user.userId } },
+    });
+    if (taken) throw new BadRequestException('该邮箱已被其他账号使用');
+    return this.prisma.user.update({
+      where: { id: req.user.userId },
+      data: { email },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        displayName: true,
+        avatarUrl: true,
+        isPlatformAdmin: true,
+      },
+    });
+  }
+
   /** 注销账号（软删）：吊销会话、禁用账号、释放手机号 */
   @Delete()
   async deleteMe(@Req() req: { user: { userId: string } }) {
@@ -193,7 +241,18 @@ export class UsersController {
       throw new BadRequestException('平台超管不可自助注销，请联系运维');
     }
     const tombstone = `deleted_${createHash('sha256').update(userId).digest('hex').slice(0, 12)}`;
+    const ownedOrgs = await this.prisma.organization.findMany({
+      where: { ownerId: userId },
+      select: { id: true, name: true, _count: { select: { members: true } } },
+    });
+    const blocking = ownedOrgs.find((o) => o._count.members > 1);
+    if (blocking) {
+      throw new BadRequestException(
+        `你仍是组织「${blocking.name}」的创建者且有其他成员，请先转让创建者后再注销`,
+      );
+    }
     await this.prisma.$transaction([
+      this.prisma.orgMember.deleteMany({ where: { userId } }),
       this.prisma.refreshToken.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },

@@ -42,6 +42,21 @@ export class OrgsService {
       .slice(0, 32);
   }
 
+  private async notifyUser(
+    userId: string,
+    orgId: string | null,
+    title: string,
+    body: string,
+  ) {
+    try {
+      await this.prisma.notification.create({
+        data: { userId, orgId, title, body },
+      });
+    } catch {
+      // 站内信失败不阻断主流程
+    }
+  }
+
   /** 邀请链接域名：优先配置中心 client.auth_web_base */
   private async webBase(): Promise<string> {
     const row = await this.prisma.systemSetting.findUnique({
@@ -61,6 +76,111 @@ export class OrgsService {
 
   private isEnterprisePlanKey(key?: string | null) {
     return key === 'enterprise' || key === 'team';
+  }
+
+  /**
+   * 确保用户有个人工作区（free 套餐）：用于订阅计费 / Sync / 审查记录。
+   * 不出现在「组织」菜单与超管企业组织列表（按套餐 key 过滤）。
+   * 若已是企业成员则原样返回企业组织。
+   */
+  async ensurePersonalWorkspace(userId: string): Promise<{
+    id: string;
+    name: string;
+    slug: string;
+    planKey: string;
+    kind: 'personal' | 'enterprise';
+  }> {
+    const existing = await this.prisma.orgMember.findUnique({
+      where: { userId },
+      include: {
+        org: {
+          include: { subscription: { include: { plan: true } } },
+        },
+      },
+    });
+    if (existing) {
+      const planKey = existing.org.subscription?.plan?.key || 'free';
+      return {
+        id: existing.org.id,
+        name: existing.org.name,
+        slug: existing.org.slug,
+        planKey,
+        kind: this.isEnterprisePlanKey(planKey) ? 'enterprise' : 'personal',
+      };
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, displayName: true, phone: true },
+    });
+    if (!user) throw new NotFoundException('用户不存在');
+
+    const freePlan = await this.prisma.plan.findUnique({
+      where: { key: 'free' },
+    });
+    if (!freePlan) {
+      throw new BadRequestException('免费套餐未配置，请先执行 seed');
+    }
+
+    const label =
+      (user.displayName && user.displayName.trim()) ||
+      (user.phone ? `用户${user.phone.slice(-4)}` : '用户');
+    const name = `${label}的个人工作区`;
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const org = await tx.organization.create({
+        data: {
+          name,
+          slug: this.slugify(`personal-${userId.slice(0, 8)}`),
+          ownerId: userId,
+          status: 'active',
+        },
+      });
+      await tx.orgMember.create({
+        data: { orgId: org.id, userId, role: 'org_owner' },
+      });
+      await tx.orgConfig.create({
+        data: {
+          orgId: org.id,
+          version: 1,
+          payload: {
+            llmPolicy: { providers: [] },
+            mcpTemplates: [],
+            rulePack: { enabledRuleIds: [], customRules: [] },
+            methodIds: [],
+            pipelineTemplates: [],
+            reportFormats: ['md', 'html'],
+            notifyOnComplete: true,
+          },
+        },
+      });
+      await tx.subscription.create({
+        data: {
+          orgId: org.id,
+          planId: freePlan.id,
+          status: 'active',
+          note: '注册自动开通免费个人工作区',
+        },
+      });
+      return org;
+    });
+
+    await this.audit.log({
+      orgId: created.id,
+      actorId: userId,
+      action: 'org.personal_workspace_create',
+      resourceType: 'organization',
+      resourceId: created.id,
+      detail: { planKey: 'free' },
+    });
+
+    return {
+      id: created.id,
+      name: created.name,
+      slug: created.slug,
+      planKey: 'free',
+      kind: 'personal',
+    };
   }
 
   /** 用户当前是否已在某个企业组织 */
@@ -397,6 +517,16 @@ export class OrgsService {
           resourceType: 'org_member',
           detail: { phone, role, userId: user.id },
         });
+        const org = await this.prisma.organization.findUnique({
+          where: { id: orgId },
+          select: { name: true },
+        });
+        await this.notifyUser(
+          user.id,
+          orgId,
+          '已加入组织',
+          `你已加入「${org?.name || '组织'}」，角色：${role}`,
+        );
         const base = await this.webBase();
         return {
           mode: 'joined' as const,
@@ -430,6 +560,55 @@ export class OrgsService {
         ? '该手机号尚未注册，已生成邀请链接；对方注册登录后将自动加入'
         : '已生成邀请链接，分享给对方即可',
     };
+  }
+
+  async listInvites(orgId: string, actorId: string, isPlatformAdmin: boolean) {
+    await this.assertRole(orgId, actorId, MANAGE_ROLES, isPlatformAdmin, {
+      allowPlatformAdmin: false,
+    });
+    return this.prisma.orgInvite.findMany({
+      where: { orgId, status: 'pending', expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        phone: true,
+        role: true,
+        status: true,
+        expiresAt: true,
+        createdAt: true,
+        createdBy: true,
+      },
+    });
+  }
+
+  async revokeInvite(
+    orgId: string,
+    inviteId: string,
+    actorId: string,
+    isPlatformAdmin: boolean,
+  ) {
+    await this.assertRole(orgId, actorId, MANAGE_ROLES, isPlatformAdmin, {
+      allowPlatformAdmin: false,
+    });
+    const invite = await this.prisma.orgInvite.findFirst({
+      where: { id: inviteId, orgId },
+    });
+    if (!invite) throw new NotFoundException('邀请不存在');
+    if (invite.status !== 'pending') {
+      throw new BadRequestException('仅待处理邀请可撤销');
+    }
+    await this.prisma.orgInvite.update({
+      where: { id: inviteId },
+      data: { status: 'revoked' },
+    });
+    await this.audit.log({
+      orgId,
+      actorId,
+      action: 'member.invite_revoke',
+      resourceType: 'org_invite',
+      resourceId: inviteId,
+    });
+    return { ok: true };
   }
 
   async getInvitePreview(token: string) {
@@ -508,6 +687,18 @@ export class OrgsService {
       resourceType: 'org_invite',
       resourceId: invite.id,
     });
+    const org = await this.prisma.organization.findUnique({
+      where: { id: invite.orgId },
+      select: { name: true },
+    });
+    if (invite.createdBy) {
+      await this.notifyUser(
+        invite.createdBy,
+        invite.orgId,
+        '邀请已接受',
+        `${user.displayName || user.phone || '成员'} 已加入「${org?.name || '组织'}」`,
+      );
+    }
     return { ok: true, orgId: invite.orgId };
   }
 
@@ -544,6 +735,24 @@ export class OrgsService {
         resourceType: 'org_invite',
         resourceId: invite.id,
       });
+      const org = await this.prisma.organization.findUnique({
+        where: { id: invite.orgId },
+        select: { name: true },
+      });
+      if (invite.createdBy) {
+        await this.notifyUser(
+          invite.createdBy,
+          invite.orgId,
+          '邀请已接受',
+          `${user.displayName || user.phone || '成员'} 已通过邀请加入「${org?.name || '组织'}」`,
+        );
+      }
+      await this.notifyUser(
+        userId,
+        invite.orgId,
+        '已加入组织',
+        `你已加入「${org?.name || '组织'}」，角色：${invite.role}`,
+      );
       return { orgId: invite.orgId, role: invite.role };
     } catch {
       return null;
@@ -561,8 +770,10 @@ export class OrgsService {
     await this.assertRole(orgId, actorId, MANAGE_ROLES, isPlatformAdmin, {
       allowPlatformAdmin: false,
     });
-    if (!['org_admin', 'member'].includes(role)) {
-      throw new BadRequestException('仅可调整为组织管理员或成员');
+    if (!['org_admin', 'member', 'billing_viewer', 'auditor'].includes(role)) {
+      throw new BadRequestException(
+        '仅可调整为组织管理员、成员、账单查看或审计',
+      );
     }
     const org = await this.prisma.organization.findUnique({
       where: { id: orgId },

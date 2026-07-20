@@ -54,6 +54,23 @@ export class BillingService {
     };
   }
 
+  /** 按套餐 key 推算到期时间；free 无到期 */
+  endsAtForPlanKey(planKey: string, from = new Date()): Date | null {
+    if (!planKey || planKey === 'free') return null;
+    const d = new Date(from);
+    if (planKey === 'personal_month' || planKey === 'personal') {
+      d.setMonth(d.getMonth() + 1);
+      return d;
+    }
+    if (planKey === 'personal_quarter') {
+      d.setMonth(d.getMonth() + 3);
+      return d;
+    }
+    // personal_year / enterprise / team 等按年
+    d.setFullYear(d.getFullYear() + 1);
+    return d;
+  }
+
   /** 平台管理员人工开通/切换套餐 */
   async assignPlan(
     orgId: string,
@@ -63,6 +80,8 @@ export class BillingService {
   ) {
     const plan = await this.prisma.plan.findUnique({ where: { key: planKey } });
     if (!plan) throw new NotFoundException('套餐不存在');
+    const startedAt = new Date();
+    const endsAt = this.endsAtForPlanKey(planKey, startedAt);
     const sub = await this.prisma.subscription.upsert({
       where: { orgId },
       create: {
@@ -70,12 +89,15 @@ export class BillingService {
         planId: plan.id,
         status: 'active',
         note: note || '人工开通',
+        startedAt,
+        endsAt,
       },
       update: {
         planId: plan.id,
         status: 'active',
         note: note || '人工开通',
-        startedAt: new Date(),
+        startedAt,
+        endsAt,
       },
       include: { plan: true },
     });
@@ -85,7 +107,7 @@ export class BillingService {
       action: 'billing.change_plan',
       resourceType: 'subscription',
       resourceId: sub.id,
-      detail: { planKey, note },
+      detail: { planKey, note, endsAt },
     });
     return sub;
   }

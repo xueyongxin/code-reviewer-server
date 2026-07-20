@@ -48,6 +48,14 @@ export class SendSmsDto {
   phone!: string;
 }
 
+export class SendEmailCodeDto {
+  @IsEmail({}, { message: '邮箱格式不正确' })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  email!: string;
+}
+
 export class RegisterPhoneDto {
   @PhoneField()
   @IsString()

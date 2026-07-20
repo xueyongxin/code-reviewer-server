@@ -12,6 +12,7 @@ import {
   LoginSmsDto,
   RegisterDto,
   RegisterPhoneDto,
+  SendEmailCodeDto,
   SendSmsDto,
   WebHandoffExchangeDto,
 } from './auth.dto';
@@ -59,6 +60,18 @@ export class AuthController {
     return this.auth.sendSms(dto);
   }
 
+  @Post('email/send')
+  sendEmailCode(@Body() dto: SendEmailCodeDto, @Req() req: Request) {
+    assertRateLimit(
+      clientKey(req, `email:${dto.email}`),
+      5,
+      60_000,
+      '邮件验证码发送过于频繁',
+    );
+    assertRateLimit(clientKey(req, 'email-ip'), 20, 60_000, '邮件验证码发送过于频繁');
+    return this.auth.sendEmailCode(dto);
+  }
+
   @Post('register/phone')
   registerPhone(@Body() dto: RegisterPhoneDto, @Req() req: Request) {
     assertRateLimit(clientKey(req, 'register-phone'), 10, 60_000);
@@ -98,7 +111,8 @@ export class AuthController {
 
   /** 桌面端用授权码换取 Token */
   @Post('desktop/exchange')
-  exchangeDesktopCode(@Body() dto: DesktopExchangeDto) {
+  exchangeDesktopCode(@Body() dto: DesktopExchangeDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, 'desktop-exchange'), 20, 60_000);
     return this.auth.exchangeDesktopCode(dto.code, dto.state);
   }
 
@@ -111,7 +125,8 @@ export class AuthController {
 
   /** 浏览器用交接码换取会话 */
   @Post('web/exchange')
-  exchangeWebHandoff(@Body() dto: WebHandoffExchangeDto) {
+  exchangeWebHandoff(@Body() dto: WebHandoffExchangeDto, @Req() req: Request) {
+    assertRateLimit(clientKey(req, 'web-exchange'), 20, 60_000);
     return this.auth.exchangeWebHandoff(dto.code);
   }
 

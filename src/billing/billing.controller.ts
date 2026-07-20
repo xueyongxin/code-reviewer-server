@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { OrgRolesGuard, PlatformAdmin } from '../common/org-roles.guard';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { OrgsService } from '../orgs/orgs.service';
 import { BillingService } from './billing.service';
 
 class AssignPlanDto {
@@ -60,6 +61,7 @@ export class BillingController {
     private readonly billing: BillingService,
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly orgs: OrgsService,
   ) {}
 
   @Get('plans')
@@ -188,6 +190,9 @@ export class BillingController {
       if (!m) {
         throw new ForbiddenException('无权下单');
       }
+      if (m.role !== 'org_owner' && m.role !== 'org_admin') {
+        throw new ForbiddenException('仅组织管理员或创建者可下单');
+      }
     }
     const order = await this.prisma.order.create({
       data: {
@@ -231,7 +236,9 @@ export class BillingController {
       },
       include: { plan: true },
     });
-    // 已有组织：直接开通套餐；无组织企业单：仅标记已付，等用户创建组织
+    // 已有组织：直接开通套餐
+    // 个人单无 orgId：落到下单人个人工作区
+    // 企业单无组织：仅标记已付，等用户创建组织
     if (order.orgId) {
       await this.billing.assignPlan(
         order.orgId,
@@ -239,6 +246,23 @@ export class BillingController {
         req.user.userId,
         `订单 ${order.id} 已确认付款（${paymentMethod}）`,
       );
+    } else {
+      const isEnterprise =
+        order.plan.key === 'enterprise' || order.plan.key === 'team';
+      if (!isEnterprise && order.createdBy) {
+        const ws = await this.orgs.ensurePersonalWorkspace(order.createdBy);
+        await this.billing.assignPlan(
+          ws.id,
+          order.plan.key,
+          req.user.userId,
+          `订单 ${order.id} 已确认付款（${paymentMethod}）`,
+        );
+        return this.prisma.order.update({
+          where: { id: order.id },
+          data: { orgId: ws.id },
+          include: { plan: true },
+        });
+      }
     }
     return updated;
   }

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { IsObject } from 'class-validator';
 import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { ConfigCenterService } from './config-center.service';
@@ -41,5 +41,33 @@ export class ConfigCenterController {
     @Req() req: { user: { userId: string; isPlatformAdmin: boolean } },
   ) {
     return this.config.versions(orgId, req.user.userId, req.user.isPlatformAdmin);
+  }
+
+  @Get('versions/:version')
+  getVersion(
+    @Param('orgId') orgId: string,
+    @Param('version') version: string,
+    @Req() req: { user: { userId: string; isPlatformAdmin: boolean } },
+  ) {
+    return this.config.getVersion(
+      orgId,
+      Number(version),
+      req.user.userId,
+      req.user.isPlatformAdmin,
+    );
+  }
+
+  @Post('versions/:version/rollback')
+  rollback(
+    @Param('orgId') orgId: string,
+    @Param('version') version: string,
+    @Req() req: { user: { userId: string; isPlatformAdmin: boolean } },
+  ) {
+    return this.config.rollback(
+      orgId,
+      Number(version),
+      req.user.userId,
+      req.user.isPlatformAdmin,
+    );
   }
 }

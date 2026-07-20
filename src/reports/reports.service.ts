@@ -3,9 +3,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, ReportStatus, ReportVisibility } from '@prisma/client';
+import { OrgRole, Prisma, ReportStatus, ReportVisibility } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+
+const READ_ONLY_ROLES: OrgRole[] = ['billing_viewer', 'auditor'];
 
 @Injectable()
 export class ReportsService {
@@ -23,8 +25,74 @@ export class ReportsService {
     return m.role;
   }
 
+  private assertNotReadOnly(role: OrgRole | 'org_owner') {
+    if (READ_ONLY_ROLES.includes(role as OrgRole)) {
+      throw new ForbiddenException('只读角色（账单查看/审计）不可上传或删除审查记录');
+    }
+  }
+
+  /** 禁用组织不可写入审查记录 */
+  private async assertOrgWritable(orgId: string) {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { id: true, status: true },
+    });
+    if (!org) throw new NotFoundException('组织不存在');
+    if (org.status === 'disabled') {
+      throw new ForbiddenException('组织已禁用，无法同步审查记录');
+    }
+  }
+
   private periodKey(d = new Date()): string {
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private async resolvePlanLimits(orgId: string): Promise<{
+    maxReviewsMonth: number;
+    retentionDays: number;
+    storageMb: number;
+  }> {
+    const sub = await this.prisma.subscription.findUnique({
+      where: { orgId },
+      include: { plan: true },
+    });
+    if (sub?.plan) {
+      return {
+        maxReviewsMonth: sub.plan.maxReviewsMonth,
+        retentionDays: sub.plan.retentionDays,
+        storageMb: sub.plan.storageMb,
+      };
+    }
+    const free = await this.prisma.plan.findUnique({ where: { key: 'free' } });
+    return {
+      maxReviewsMonth: free?.maxReviewsMonth ?? 50,
+      retentionDays: free?.retentionDays ?? 30,
+      storageMb: free?.storageMb ?? 500,
+    };
+  }
+
+  private retentionCutoff(retentionDays: number): Date {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - Math.max(1, retentionDays));
+    return d;
+  }
+
+  private payloadBytes(payload: unknown): number {
+    try {
+      return Buffer.byteLength(JSON.stringify(payload ?? null), 'utf8');
+    } catch {
+      return 0;
+    }
+  }
+
+  private async orgStorageBytes(orgId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ bytes: bigint | number }>>`
+      SELECT COALESCE(SUM(octet_length(payload::text)), 0) AS bytes
+      FROM review_reports
+      WHERE org_id = ${orgId}
+    `;
+    const raw = rows[0]?.bytes ?? 0;
+    return typeof raw === 'bigint' ? Number(raw) : Number(raw);
   }
 
   async upload(
@@ -46,25 +114,47 @@ export class ReportsService {
       payload: unknown;
     },
   ) {
-    await this.assertMember(orgId, userId, isPlatformAdmin);
+    const role = await this.assertMember(orgId, userId, isPlatformAdmin);
+    this.assertNotReadOnly(role);
+    await this.assertOrgWritable(orgId);
 
-    // 配额：月审查次数
-    const sub = await this.prisma.subscription.findUnique({
-      where: { orgId },
-      include: { plan: true },
+    const limits = await this.resolvePlanLimits(orgId);
+    const period = this.periodKey();
+    const used = await this.prisma.usageRecord.aggregate({
+      where: { orgId, period, metric: 'reviews' },
+      _sum: { amount: true },
     });
-    if (sub) {
-      const period = this.periodKey();
-      const used = await this.prisma.usageRecord.aggregate({
-        where: { orgId, period, metric: 'reviews' },
-        _sum: { amount: true },
+    const count = used._sum.amount ?? 0;
+    if (count >= limits.maxReviewsMonth) {
+      throw new ForbiddenException(
+        `本月审查次数已达套餐上限（${limits.maxReviewsMonth}），请联系管理员升级`,
+      );
+    }
+
+    const newBytes = this.payloadBytes(body.payload);
+    let oldBytes = 0;
+    let existing:
+      | { id: string; payload: Prisma.JsonValue }
+      | null = null;
+    if (body.clientReportId) {
+      existing = await this.prisma.reviewReport.findUnique({
+        where: {
+          orgId_clientReportId: {
+            orgId,
+            clientReportId: body.clientReportId,
+          },
+        },
+        select: { id: true, payload: true },
       });
-      const count = used._sum.amount ?? 0;
-      if (count >= sub.plan.maxReviewsMonth) {
-        throw new ForbiddenException(
-          `本月审查次数已达套餐上限（${sub.plan.maxReviewsMonth}），请联系管理员升级`,
-        );
-      }
+      if (existing) oldBytes = this.payloadBytes(existing.payload);
+    }
+    const usedBytes = await this.orgStorageBytes(orgId);
+    const nextBytes = usedBytes - oldBytes + newBytes;
+    const capBytes = limits.storageMb * 1024 * 1024;
+    if (nextBytes > capBytes) {
+      throw new ForbiddenException(
+        `云端存储已达套餐上限（${limits.storageMb} MB），请删除旧报告或升级套餐`,
+      );
     }
 
     const data = {
@@ -85,17 +175,8 @@ export class ReportsService {
     };
 
     let report;
-    let isNew = true;
+    const isNew = !existing;
     if (body.clientReportId) {
-      const existing = await this.prisma.reviewReport.findUnique({
-        where: {
-          orgId_clientReportId: {
-            orgId,
-            clientReportId: body.clientReportId,
-          },
-        },
-      });
-      isNew = !existing;
       report = await this.prisma.reviewReport.upsert({
         where: {
           orgId_clientReportId: {
@@ -136,6 +217,7 @@ export class ReportsService {
         repoUrl: body.repoUrl,
         issueCount: report.issueCount,
         billed: isNew,
+        payloadBytes: newBytes,
       },
     });
 
@@ -151,12 +233,20 @@ export class ReportsService {
     const role = await this.assertMember(orgId, userId, isPlatformAdmin);
     const page = Math.max(1, query.page ?? 1);
     const pageSize = Math.min(50, Math.max(1, query.pageSize ?? 20));
+    const limits = await this.resolvePlanLimits(orgId);
+    const cutoff = this.retentionCutoff(limits.retentionDays);
+
+    // 懒清理：删除超出保留期的报告
+    await this.prisma.reviewReport.deleteMany({
+      where: { orgId, createdAt: { lt: cutoff } },
+    });
 
     const where: Prisma.ReviewReportWhereInput = {
       orgId,
+      createdAt: { gte: cutoff },
       ...(query.repoUrl ? { repoUrl: { contains: query.repoUrl } } : {}),
     };
-    // 非管理员只看自己的 private + 组织可见
+    // 非管理员只看自己的 private + 组织可见；auditor 可看全部
     if (!isPlatformAdmin && !['org_owner', 'org_admin', 'auditor'].includes(role)) {
       where.OR = [
         { visibility: 'org' },
@@ -208,6 +298,12 @@ export class ReportsService {
       userId,
       isPlatformAdmin,
     );
+    const limits = await this.resolvePlanLimits(report.orgId);
+    const cutoff = this.retentionCutoff(limits.retentionDays);
+    if (report.createdAt < cutoff) {
+      await this.prisma.reviewReport.delete({ where: { id } }).catch(() => null);
+      throw new NotFoundException('报告已超过套餐保留期并已清理');
+    }
     if (
       report.visibility === 'private' &&
       report.uploaderId !== userId &&
@@ -227,6 +323,7 @@ export class ReportsService {
       userId,
       isPlatformAdmin,
     );
+    this.assertNotReadOnly(role);
     if (
       report.uploaderId !== userId &&
       !isPlatformAdmin &&

@@ -120,7 +120,38 @@ export class ConfigCenterService {
         version: true,
         updatedBy: true,
         createdAt: true,
+        payload: true,
       },
     });
+  }
+
+  async getVersion(
+    orgId: string,
+    version: number,
+    userId: string,
+    isPlatformAdmin: boolean,
+  ) {
+    await this.assertMember(orgId, userId, isPlatformAdmin);
+    const row = await this.prisma.orgConfigVersion.findUnique({
+      where: { orgId_version: { orgId, version } },
+    });
+    if (!row) throw new NotFoundException('配置版本不存在');
+    return row;
+  }
+
+  /** 将历史版本 payload 写回当前配置（会再归档现版本） */
+  async rollback(
+    orgId: string,
+    version: number,
+    userId: string,
+    isPlatformAdmin: boolean,
+  ) {
+    const row = await this.getVersion(orgId, version, userId, isPlatformAdmin);
+    return this.put(
+      orgId,
+      userId,
+      isPlatformAdmin,
+      row.payload as Record<string, unknown>,
+    );
   }
 }

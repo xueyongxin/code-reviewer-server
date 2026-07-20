@@ -136,6 +136,32 @@ export class OrgsController {
     );
   }
 
+  @Get(':orgId/invites')
+  listInvites(
+    @Param('orgId') orgId: string,
+    @Req() req: { user: { userId: string; isPlatformAdmin: boolean } },
+  ) {
+    return this.orgs.listInvites(
+      orgId,
+      req.user.userId,
+      req.user.isPlatformAdmin,
+    );
+  }
+
+  @Delete(':orgId/invites/:inviteId')
+  revokeInvite(
+    @Param('orgId') orgId: string,
+    @Param('inviteId') inviteId: string,
+    @Req() req: { user: { userId: string; isPlatformAdmin: boolean } },
+  ) {
+    return this.orgs.revokeInvite(
+      orgId,
+      inviteId,
+      req.user.userId,
+      req.user.isPlatformAdmin,
+    );
+  }
+
   @Post(':orgId/leave')
   leave(
     @Param('orgId') orgId: string,

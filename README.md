@@ -36,5 +36,21 @@ npm run start:dev
 | Reports | `GET /reports` `GET/DELETE /reports/:id` |
 | Billing | `GET /billing/plans` `GET /billing/usage` `POST /billing/assign-plan`（超管） |
 | Audit | `GET /audit-logs?orgId=` |
+| 代码仓库目录 | 见下表 |
+
+### 代码托管平台目录（桌面端「设置 → 代码仓库」）
+
+| 方法 | 路径 | 鉴权 |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/code-repo-catalog` | **公开**（仅已发布；可选 `?q=`） |
+| `GET` | `/api/v1/code-repo-catalog/admin/all` | JWT + 平台超管 |
+| `POST` | `/api/v1/code-repo-catalog` | JWT + 平台超管 |
+| `PUT` | `/api/v1/code-repo-catalog/:id` | JWT + 平台超管 |
+| `DELETE` | `/api/v1/code-repo-catalog/:id` | JWT + 平台超管 |
+
+Seed 默认平台 key：`github` `gitlab` `gitee` `bitbucket` `coding` `gitcode` `azure` `gitea` `other`。  
+表模型：`CodeRepoCatalogItem`（`prisma/schema.prisma`）。近期说明见 [`更新日志.md`](../更新日志.md)。
 
 密钥策略：配置上传会剥离 `token/secret/apiKey` 等字段，MCP `env` 中密钥键只保留空值占位。
+
+时间展示约定（各端）：`YYYY-MM-DD HH:mm:ss`（本地时区）；服务端工具见 `src/common/datetime.ts`。

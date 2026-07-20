@@ -214,15 +214,3 @@ COMMENT ON COLUMN orders.created_by IS '下单人用户ID';
 COMMENT ON COLUMN orders.paid_at IS '支付确认时间';
 COMMENT ON COLUMN orders.created_at IS '创建时间';
 COMMENT ON COLUMN orders.updated_at IS '更新时间';
-
--- ========== api_keys ==========
-COMMENT ON TABLE api_keys IS '组织 API Key（调用开放接口；仅存前缀与哈希）';
-COMMENT ON COLUMN api_keys.id IS '主键 UUID';
-COMMENT ON COLUMN api_keys.org_id IS '所属组织ID';
-COMMENT ON COLUMN api_keys.name IS '密钥备注名';
-COMMENT ON COLUMN api_keys.key_prefix IS '密钥前缀（展示用，非完整密钥）';
-COMMENT ON COLUMN api_keys.key_hash IS '完整密钥的哈希（校验用）';
-COMMENT ON COLUMN api_keys.created_by IS '创建人用户ID';
-COMMENT ON COLUMN api_keys.last_used_at IS '最近使用时间';
-COMMENT ON COLUMN api_keys.revoked_at IS '吊销时间（空=有效）';
-COMMENT ON COLUMN api_keys.created_at IS '创建时间';

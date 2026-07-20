@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ApiKeysModule } from './api-keys/api-keys.module';
 import { AdminModule } from './admin/admin.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
@@ -39,7 +38,6 @@ import { CodeRepoCatalogModule } from './code-repo-catalog/code-repo-catalog.mod
     ChatCommandsModule,
     ReviewMethodsModule,
     UserRulesModule,
-    ApiKeysModule,
     NotificationsModule,
     AdminModule,
     PublicModule,

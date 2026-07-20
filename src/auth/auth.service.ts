@@ -17,11 +17,13 @@ import {
   LoginSmsDto,
   RegisterDto,
   RegisterPhoneDto,
+  SendEmailCodeDto,
   SendSmsDto,
 } from './auth.dto';
 import { normalizePhone } from './phone.util';
 
 export const SMS_TTL_MS = 5 * 60 * 1000;
+export const EMAIL_CODE_TTL_MS = 5 * 60 * 1000;
 const CODE_TTL_MS = 2 * 60 * 1000;
 
 type DesktopAuthPayload = {
@@ -52,7 +54,7 @@ export class AuthService {
     return createHash('sha256').update(raw).digest('hex');
   }
 
-  /** 登录/注册后消费手机号邀请，返回当前应落地的组织 */
+  /** 登录/注册后：消费邀请 → 企业组织；否则确保个人工作区并返回 */
   private async resolveOrgAfterAuth(userId: string) {
     const joined = await this.orgs.consumePendingInvitesForUser(userId);
     if (joined?.orgId) {
@@ -60,26 +62,14 @@ export class AuthService {
         where: { id: joined.orgId },
         select: { id: true, name: true, slug: true },
       });
-      return org;
+      if (org) return org;
     }
-    const m = await this.prisma.orgMember.findUnique({
-      where: { userId },
-      include: {
-        org: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            subscription: { select: { plan: { select: { key: true } } } },
-          },
-        },
-      },
-    });
-    const key = m?.org?.subscription?.plan?.key;
-    if (key === 'enterprise' || key === 'team') {
-      return { id: m!.org.id, name: m!.org.name, slug: m!.org.slug };
-    }
-    return null;
+    const workspace = await this.orgs.ensurePersonalWorkspace(userId);
+    return {
+      id: workspace.id,
+      name: workspace.name,
+      slug: workspace.slug,
+    };
   }
 
   /** 非正常状态禁止登录；附带管理员备注原因 */
@@ -107,14 +97,23 @@ export class AuthService {
 
   /** 供换绑手机等场景复用 */
   async verifySmsCode(phone: string, input: string) {
-    return this.assertSmsCode(phone, input);
+    return this.assertChallengeCode('sms', phone, input);
   }
 
-  private async assertSmsCode(phone: string, input: string) {
+  /** 供换绑邮箱等场景复用 */
+  async verifyEmailCode(email: string, input: string) {
+    return this.assertChallengeCode('email', email.toLowerCase(), input);
+  }
+
+  private async assertChallengeCode(
+    kind: string,
+    subject: string,
+    input: string,
+  ) {
     const row = await this.prisma.authChallenge.findFirst({
       where: {
-        kind: 'sms',
-        subject: phone,
+        kind,
+        subject,
         consumedAt: null,
         expiresAt: { gt: new Date() },
       },
@@ -130,6 +129,13 @@ export class AuthService {
       where: { id: row.id },
       data: { consumedAt: new Date() },
     });
+  }
+
+  private isOtpDebug(): boolean {
+    if (process.env.NODE_ENV === 'production') return false;
+    return (
+      process.env.SMS_DEBUG === '1' || process.env.EMAIL_DEBUG === '1'
+    );
   }
 
   private async saveChallenge(
@@ -210,7 +216,7 @@ export class AuthService {
     };
   }
 
-  /** 注册只建账号，不建组织（加入/购买企业后再有组织） */
+  /** 注册建账号；个人工作区在发 token 后由 resolveOrgAfterAuth / ensurePersonalWorkspace 创建 */
   private async createUserOnly(params: {
     email?: string | null;
     phone?: string | null;
@@ -265,14 +271,51 @@ export class AuthService {
       detail: { phone, expiresIn: SMS_TTL_MS / 1000 },
     });
 
-    // 仅显式开启 SMS_DEBUG=1 时回传验证码（本地联调）；生产禁止回传
-    const debugSms = process.env.SMS_DEBUG === '1';
+    /**
+     * 验证码回传仅允许本地联调：
+     * - SMS_DEBUG=1 或 EMAIL_DEBUG=1
+     * - 且 NODE_ENV 不得为 production（生产误开也不回传）
+     * 真实短信网关未接入前，非 DEBUG 环境用户无法收到验证码。
+     */
+    const isProd = process.env.NODE_ENV === 'production';
+    const debugSms = this.isOtpDebug();
     return {
       ok: true,
-      message: '验证码已发送',
+      message: debugSms
+        ? '验证码已生成（联调模式：响应含 code，未发真实短信）'
+        : isProd
+          ? '验证码已受理（请查收短信；若未配置短信通道请联系管理员）'
+          : '验证码已生成（未开启 SMS_DEBUG/EMAIL_DEBUG，响应不含 code，且未发真实短信）',
       phone,
       expiresIn: SMS_TTL_MS / 1000,
+      debug: debugSms,
       ...(debugSms ? { code } : {}),
+    };
+  }
+
+  async sendEmailCode(dto: SendEmailCodeDto) {
+    const email = dto.email.toLowerCase().trim();
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await this.saveChallenge('email', email, code, EMAIL_CODE_TTL_MS);
+
+    await this.audit.log({
+      action: 'auth.email_send',
+      detail: { email, expiresIn: EMAIL_CODE_TTL_MS / 1000 },
+    });
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const debugEmail = this.isOtpDebug();
+    return {
+      ok: true,
+      message: debugEmail
+        ? '验证码已生成（联调模式：响应含 code，未发真实邮件）'
+        : isProd
+          ? '验证码已受理（请查收邮件；若未配置邮件通道请联系管理员）'
+          : '验证码已生成（未开启 SMS_DEBUG/EMAIL_DEBUG，响应不含 code，且未发真实邮件）',
+      email,
+      expiresIn: EMAIL_CODE_TTL_MS / 1000,
+      debug: debugEmail,
+      ...(debugEmail ? { code } : {}),
     };
   }
 
@@ -281,7 +324,7 @@ export class AuthService {
     meta?: { ip?: string; ua?: string },
   ) {
     const phone = normalizePhone(dto.phone);
-    await this.assertSmsCode(phone, dto.code);
+    await this.assertChallengeCode('sms', phone, dto.code);
 
     const exists = await this.prisma.user.findUnique({ where: { phone } });
     if (exists) throw new BadRequestException('手机号已注册');
@@ -383,13 +426,13 @@ export class AuthService {
 
   async loginSms(dto: LoginSmsDto, meta?: { ip?: string; ua?: string }) {
     const phone = normalizePhone(dto.phone);
-    await this.assertSmsCode(phone, dto.code);
+    await this.assertChallengeCode('sms', phone, dto.code);
 
     let user = await this.prisma.user.findUnique({ where: { phone } });
     let isNew = false;
 
     if (!user) {
-      // 首次验证码登录 = 自动注册（不建组织）
+      // 首次验证码登录 = 自动注册（随后 resolveOrgAfterAuth 会建个人工作区）
       isNew = true;
       const displayName = `用户${phone.slice(0, 3)}****${phone.slice(-4)}`;
       const created = await this.createUserOnly({
