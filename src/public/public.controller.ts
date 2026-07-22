@@ -14,6 +14,10 @@ import {
   DEFAULT_CLIENT_AUTH_WEB_BASE,
   LEGAL_TERMS_KEY,
 } from './client-config.keys';
+import {
+  DEFAULT_PRIVACY_POLICY,
+  DEFAULT_USER_AGREEMENT,
+} from './legal-terms.defaults';
 
 export {
   CLIENT_API_BASE_KEY,
@@ -26,19 +30,10 @@ export {
   LEGAL_TERMS_KEY,
 } from './client-config.keys';
 
-const DEFAULT_USER_AGREEMENT = `使用 Code Reviewer 桌面端与 Web 控制台，即表示你同意合理使用服务、不得滥用接口与审查额度，并遵守适用的法律法规。
-
-1. 你应合法获取并使用本服务，不得用于违法违规用途。
-2. 不得恶意刷量、绕过套餐额度或破坏系统安全。
-3. 账号由你自行妥善保管，因保管不善导致的损失由你承担。
-4. 我们可能根据运营需要更新本协议，更新后以控制台/官网展示为准。`;
-
-const DEFAULT_PRIVACY_POLICY = `Code Reviewer 重视隐私保护。
-
-1. 审查默认在本机执行，敏感代码默认不出本机。
-2. 云端主要用于账号、订阅、配置与审查记录同步。
-3. 我们不会在未授权情况下将你的代码用于模型训练。
-4. 如需删除账号或导出数据，可通过支持渠道联系我们。`;
+export {
+  DEFAULT_PRIVACY_POLICY,
+  DEFAULT_USER_AGREEMENT,
+} from './legal-terms.defaults';
 
 class PatchClientConfigDto {
   @IsOptional()
