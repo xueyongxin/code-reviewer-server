@@ -266,10 +266,25 @@ async function main() {
 
   // —— MCP 目录 ——
   try {
-    const seedPath = join(
-      __dirname,
-      '../../code-reviewer-client/src/main/config/mcp-marketplace-seed.json',
-    )
+    const candidates = [
+      join(__dirname, 'seed-data', 'mcp-marketplace-seed.json'),
+      join(__dirname, '..', 'seed-data', 'mcp-marketplace-seed.json'),
+      join(
+        __dirname,
+        '../../code-reviewer-client/src/main/config/mcp-marketplace-seed.json',
+      ),
+    ]
+    const seedPath = candidates.find((p) => {
+      try {
+        readFileSync(p)
+        return true
+      } catch {
+        return false
+      }
+    })
+    if (!seedPath) {
+      console.warn('MCP seed json 未找到，跳过 MCP 目录种子')
+    } else {
     const items = JSON.parse(readFileSync(seedPath, 'utf8')) as Array<{
       key: string
       name: string
@@ -316,6 +331,7 @@ async function main() {
       })
     }
     console.log(`MCP catalog seeded: ${items.length}`)
+    }
   } catch (e) {
     console.warn('MCP catalog seed skipped:', e)
   }
@@ -648,19 +664,35 @@ async function main() {
     where: { key: 'client.api_base' },
     create: {
       key: 'client.api_base',
-      value: 'http://localhost:3100',
+      value: (process.env.PUBLIC_API_BASE || 'http://localhost:3100').replace(
+        /\/$/,
+        '',
+      ),
       updatedBy: platformAdmin.id,
     },
-    update: {},
+    update: process.env.PUBLIC_API_BASE
+      ? {
+          value: process.env.PUBLIC_API_BASE.replace(/\/$/, ''),
+          updatedBy: platformAdmin.id,
+        }
+      : {},
   })
   await prisma.systemSetting.upsert({
     where: { key: 'client.auth_web_base' },
     create: {
       key: 'client.auth_web_base',
-      value: 'http://localhost:3000',
+      value: (process.env.ADMIN_WEB_BASE || 'http://localhost:3000').replace(
+        /\/$/,
+        '',
+      ),
       updatedBy: platformAdmin.id,
     },
-    update: {},
+    update: process.env.ADMIN_WEB_BASE
+      ? {
+          value: process.env.ADMIN_WEB_BASE.replace(/\/$/, ''),
+          updatedBy: platformAdmin.id,
+        }
+      : {},
   })
 
   const memberCount = await prisma.orgMember.count({

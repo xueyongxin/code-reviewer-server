@@ -19,6 +19,7 @@ import { SyncModule } from './sync/sync.module';
 import { UserRulesModule } from './user-rules/user-rules.module';
 import { UsersModule } from './users/users.module';
 import { CodeRepoCatalogModule } from './code-repo-catalog/code-repo-catalog.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { CodeRepoCatalogModule } from './code-repo-catalog/code-repo-catalog.mod
     AdminModule,
     PublicModule,
     CodeRepoCatalogModule,
+    StorageModule,
   ],
 })
 export class AppModule {}

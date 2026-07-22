@@ -737,3 +737,33 @@ model Order {
   @@index([createdBy, status])
   @@map("orders")
 }
+
+/// 客户端安装包发布记录（超管上传后写入；最新版本同步到 client.download）
+model ClientRelease {
+  /// 主键 UUID
+  id        String   @id @default(uuid())
+  /// 版本号，如 0.1.0
+  version   String
+  /// 平台：mac | win | linux
+  platform  String
+  /// 原始文件名
+  fileName  String   @map("file_name")
+  /// 可下载的公网 URL
+  fileUrl   String   @map("file_url")
+  /// 对象存储 key（七牛）
+  fileKey   String?  @map("file_key")
+  /// 文件大小（字节）
+  fileSize  BigInt?  @map("file_size")
+  /// 发布说明
+  notes     String   @default("")
+  /// 是否为该平台当前对外版本
+  isLatest  Boolean  @default(false) @map("is_latest")
+  /// 上传人用户 ID
+  createdBy String?  @map("created_by")
+  /// 创建时间
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([platform, createdAt(sort: Desc)])
+  @@index([version, platform])
+  @@map("client_releases")
+}
