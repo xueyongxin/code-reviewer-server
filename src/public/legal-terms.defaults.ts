@@ -65,7 +65,7 @@ export const DEFAULT_USER_AGREEMENT = `
 </ol>
 
 <h3>九、联系我们</h3>
-<p>如对本协议有疑问，请通过官网公示渠道或邮箱 <a href="mailto:support@codereviewer.local">support@codereviewer.local</a> 与我们联系。</p>
+<p>如对本协议有疑问，请通过官网公示渠道或邮箱 <a href="mailto:support@codereviewer.cn">support@codereviewer.cn</a> 与我们联系。</p>
 `.trim();
 
 export const DEFAULT_PRIVACY_POLICY = `
@@ -129,5 +129,5 @@ export const DEFAULT_PRIVACY_POLICY = `
 <p>我们可能适时更新本政策，并通过官网页脚「隐私协议」、控制台或其他合理方式公布。重大变更将尽量以更显著方式提示。若更新后你继续使用本服务，即表示知悉更新内容。</p>
 
 <h3>十、联系我们</h3>
-<p>如对本政策或个人信息保护有任何疑问、投诉或建议，请发送邮件至 <a href="mailto:support@codereviewer.local">support@codereviewer.local</a>。我们将尽快予以回复。</p>
+<p>如对本政策或个人信息保护有任何疑问、投诉或建议，请发送邮件至 <a href="mailto:support@codereviewer.cn">support@codereviewer.cn</a>。我们将尽快予以回复。</p>
 `.trim();

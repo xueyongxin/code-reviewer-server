@@ -30,14 +30,17 @@ type DesktopAuthPayload = {
   state: string;
   accessToken: string;
   refreshToken: string;
-  expiresIn: string;
+  expiresIn: string | number;
   user: {
     id: string;
     email: string | null;
     phone: string | null;
     displayName: string;
+    avatarUrl?: string | null;
     isPlatformAdmin: boolean;
   };
+  /** 个人工作区或企业组织；桌面端落盘用，避免再依赖仅含企业的 /orgs */
+  org?: { id: string; name: string; slug?: string } | null;
 };
 
 @Injectable()
@@ -110,25 +113,27 @@ export class AuthService {
     subject: string,
     input: string,
   ) {
-    const row = await this.prisma.authChallenge.findFirst({
+    const codeHash = this.hashCode(input.trim());
+    // 单步原子消费：codeHash 在 WHERE 中，并发请求只有一个 count>0
+    const occupied = await this.prisma.authChallenge.updateMany({
       where: {
         kind,
         subject,
+        codeHash,
         consumedAt: null,
         expiresAt: { gt: new Date() },
       },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!row) {
-      throw new BadRequestException('验证码已过期，请重新获取');
-    }
-    if (row.codeHash !== this.hashCode(input.trim())) {
-      throw new BadRequestException('验证码错误');
-    }
-    await this.prisma.authChallenge.update({
-      where: { id: row.id },
       data: { consumedAt: new Date() },
     });
+    if (occupied.count > 0) return;
+    // 区分「码错误」与「过期/已用」
+    const anyValid = await this.prisma.authChallenge.findFirst({
+      where: { kind, subject, consumedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    throw new BadRequestException(
+      anyValid ? '验证码错误' : '验证码已过期，请重新获取',
+    );
   }
 
   private isOtpDebug(): boolean {
@@ -166,20 +171,26 @@ export class AuthService {
     kind: string,
     rawCode: string,
   ): Promise<DesktopAuthPayload | null> {
-    const row = await this.prisma.authChallenge.findFirst({
-      where: {
-        kind,
-        codeHash: this.hashCode(rawCode),
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+    const codeHash = this.hashCode(rawCode);
+    // 事务内 find → consume，避免并发双花
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.authChallenge.findFirst({
+        where: {
+          kind,
+          codeHash,
+          consumedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!row) return null;
+      const occupied = await tx.authChallenge.updateMany({
+        where: { id: row.id, consumedAt: null },
+        data: { consumedAt: new Date() },
+      });
+      if (occupied.count === 0) return null;
+      return (row.payload as DesktopAuthPayload | null) ?? null;
     });
-    if (!row) return null;
-    await this.prisma.authChallenge.update({
-      where: { id: row.id },
-      data: { consumedAt: new Date() },
-    });
-    return (row.payload as DesktopAuthPayload | null) ?? null;
   }
 
   private async issueTokens(user: {
@@ -504,6 +515,7 @@ export class AuthService {
     }
     this.assertAccountUsable(user);
     const tokens = await this.issueTokens(user);
+    const org = await this.resolveOrgAfterAuth(userId);
     const code = randomUUID().replace(/-/g, '');
     await this.saveChallenge('desktop', state, code, CODE_TTL_MS, {
       state,
@@ -511,6 +523,7 @@ export class AuthService {
       refreshToken: tokens.refreshToken,
       expiresIn: tokens.expiresIn,
       user: tokens.user,
+      org,
     });
 
     const redirectUri = `codereviewer://auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
@@ -518,6 +531,7 @@ export class AuthService {
       code,
       expiresIn: 120,
       redirectUri,
+      org,
     };
   }
 
@@ -534,6 +548,7 @@ export class AuthService {
       refreshToken: entry.refreshToken,
       expiresIn: entry.expiresIn,
       user: entry.user,
+      org: entry.org ?? null,
     };
   }
 
@@ -547,6 +562,7 @@ export class AuthService {
     }
     this.assertAccountUsable(user);
     const tokens = await this.issueTokens(user);
+    const org = await this.resolveOrgAfterAuth(userId);
     const code = randomUUID().replace(/-/g, '');
     await this.saveChallenge('web_handoff', 'web', code, CODE_TTL_MS, {
       state: 'web',
@@ -554,8 +570,9 @@ export class AuthService {
       refreshToken: tokens.refreshToken,
       expiresIn: tokens.expiresIn,
       user: tokens.user,
+      org,
     });
-    return { code, expiresIn: 120 };
+    return { code, expiresIn: 120, org };
   }
 
   async exchangeWebHandoff(code: string) {
@@ -568,6 +585,7 @@ export class AuthService {
       refreshToken: entry.refreshToken,
       expiresIn: entry.expiresIn,
       user: entry.user,
+      org: entry.org ?? null,
     };
   }
 }

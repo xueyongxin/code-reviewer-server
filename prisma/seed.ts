@@ -695,6 +695,33 @@ async function main() {
       : {},
   })
 
+  await prisma.systemSetting.upsert({
+    where: { key: 'site.branding' },
+    create: {
+      key: 'site.branding',
+      value: {
+        brandName: process.env.SITE_BRAND_NAME || 'Code Reviewer',
+        logoUrl: process.env.SITE_LOGO_URL || '/brand-mark.svg',
+        icpBeian: process.env.SITE_ICP_BEIAN || '',
+        icpUrl: process.env.SITE_ICP_URL || 'https://beian.miit.gov.cn/',
+        psbBeian: process.env.SITE_PSB_BEIAN || '',
+        psbUrl:
+          process.env.SITE_PSB_URL ||
+          'https://www.beian.gov.cn/portal/registerSystemInfo',
+        psbLogoSrc:
+          process.env.SITE_PSB_LOGO_SRC ||
+          'https://beian.mps.gov.cn/img/logo01.dd7ff50e.png',
+        psbLogoUrl:
+          process.env.SITE_PSB_LOGO_URL ||
+          'https://www.beian.gov.cn/portal/registerSystemInfo',
+        copyright: process.env.SITE_COPYRIGHT || 'Code Reviewer 版权所有',
+        contactEmail: process.env.SITE_CONTACT_EMAIL || 'support@codereviewer.cn',
+      },
+      updatedBy: platformAdmin.id,
+    },
+    update: {},
+  })
+
   const memberCount = await prisma.orgMember.count({
     where: { orgId: shuOrg.id },
   })

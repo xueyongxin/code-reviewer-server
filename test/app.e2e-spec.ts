@@ -1,13 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
-import * as request from 'supertest';
-import { App } from 'supertest/types';
+import request from 'supertest';
 import { AppModule } from './../src/app.module';
 import { AllExceptionsFilter } from './../src/common/all-exceptions.filter';
 import { ResponseInterceptor } from './../src/common/response.interceptor';
 
 describe('Public API (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -35,7 +34,7 @@ describe('Public API (e2e)', () => {
     return request(app.getHttpServer())
       .get('/api/v1/public/client-config')
       .expect(200)
-      .expect((res) => {
+      .expect((res: request.Response) => {
         expect(res.body.code).toBe(0);
         expect(res.body.data).toHaveProperty('apiBase');
         expect(res.body.data).toHaveProperty('authWebBase');
@@ -46,7 +45,7 @@ describe('Public API (e2e)', () => {
     return request(app.getHttpServer())
       .post('/api/v1/auth/sms/send')
       .send({ phone: '13800139999' })
-      .expect((res) => {
+      .expect((res: request.Response) => {
         expect([200, 201, 429]).toContain(res.status);
         expect(res.body).toHaveProperty('code');
       });

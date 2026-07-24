@@ -251,13 +251,24 @@ export class UsersController {
         `你仍是组织「${blocking.name}」的创建者且有其他成员，请先转让创建者后再注销`,
       );
     }
-    await this.prisma.$transaction([
-      this.prisma.orgMember.deleteMany({ where: { userId } }),
-      this.prisma.refreshToken.updateMany({
+    // 用户独占的组织（个人工作区等）随注销一并清理，避免孤立记录
+    const soleOrgIds = ownedOrgs
+      .filter((o) => o._count.members <= 1)
+      .map((o) => o.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.orgMember.deleteMany({ where: { userId } });
+      for (const orgId of soleOrgIds) {
+        await tx.orgConfig.deleteMany({ where: { orgId } });
+        await tx.orgConfigVersion.deleteMany({ where: { orgId } });
+        await tx.subscription.deleteMany({ where: { orgId } });
+        await tx.organization.delete({ where: { id: orgId } }).catch(() => undefined);
+      }
+      await tx.refreshToken.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-      this.prisma.user.update({
+      });
+      await tx.user.update({
         where: { id: userId },
         data: {
           isActive: false,
@@ -271,8 +282,8 @@ export class UsersController {
           avatarUrl: null,
           passwordHash: null,
         },
-      }),
-    ]);
+      });
+    });
     return { ok: true };
   }
 }
